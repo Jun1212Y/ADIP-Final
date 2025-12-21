@@ -1,72 +1,234 @@
 import cv2
 import numpy as np
 
-# 1. 初始化資料
-img_target = cv2.imread('target.jpg') 
-if img_target is None:
-    print("找不到圖片，請檢查檔名是否正確")
-    exit()
+# ===============================
+# Config
+# ===============================
+ITER_INIT = 5
+ITER_LOCAL = 5
+ITER_GLOBAL = 5
+DISPLAY_SIZE = (600, 800)
 
-img_show = img_target.copy()
-h, w = img_target.shape[:2]
+# ===============================
+# Helper functions
+# ===============================
+def select_roi_or_skip(win, img, msg):
+    print(msg)
+    cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+    rect = cv2.selectROI(win, img, fromCenter=False, showCrosshair=True)
+    cv2.destroyWindow(win)
+
+    x, y, w, h = rect
+    if w <= 0 or h <= 0:
+        return None
+
+    H, W = img.shape[:2]
+    x = max(0, x); y = max(0, y)
+    w = min(w, W - x); h = min(h, H - y)
+    if w <= 0 or h <= 0:
+        return None
+
+    return (x, y, w, h)
+
+def show_current(img, mask, title="Current Result"):
+    fg = np.where(
+        (mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD),
+        255, 0
+    ).astype(np.uint8)
+
+    result = cv2.bitwise_and(img, img, mask=fg)
+
+    cv2.namedWindow(title, cv2.WINDOW_NORMAL)
+    cv2.imshow(title, result)
+    cv2.resizeWindow(title, DISPLAY_SIZE[0], DISPLAY_SIZE[1])
+    cv2.waitKey(1)
+
+# ===============================
+# 1. Read image
+# ===============================
+img = cv2.imread("target.jpg")
+if img is None:
+    raise SystemExit("找不到 target.jpg")
+
+h, w = img.shape[:2]
+
+# ===============================
+# 2. Select PERSON ROI (mandatory)
+# ===============================
+person_roi = select_roi_or_skip(
+    "Select PERSON ROI",
+    img,
+    "Step 1：請框選『人物』ROI（必選）"
+)
+if person_roi is None:
+    raise SystemExit("未選人物 ROI，結束")
+
+px, py, pw, ph = person_roi
+
+# ===============================
+# 3. Initial GrabCut (global)
+# ===============================
 mask = np.zeros((h, w), np.uint8)
 bgdModel = np.zeros((1, 65), np.float64)
 fgdModel = np.zeros((1, 65), np.float64)
 
-# 2. 第一階段：大範圍框選 (初始化)
-cv2.namedWindow("Select ROI", cv2.WINDOW_NORMAL)
-cv2.resizeWindow("Select ROI", 600, 800)
-rect = cv2.selectROI("Select ROI", img_target, False)
-cv2.destroyWindow("Select ROI")
+cv2.grabCut(
+    img, mask, (px, py, pw, ph),
+    bgdModel, fgdModel, ITER_INIT,
+    cv2.GC_INIT_WITH_RECT
+)
 
-if rect[2] > 0 and rect[3] > 0:
-    # 執行初步 GrabCut
-    print("正在執行初步去背...")
-    cv2.grabCut(img_target, mask, rect, bgdModel, fgdModel, 5, cv2.GC_INIT_WITH_RECT)
-    
-    # 建立視窗顯示當前結果
-    win_name = 'Refine Mode (Right Click to Box Shadow)'
-    cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(win_name, 600, 800)
+show_current(img, mask, "After Initial GrabCut")
 
-    # 定義滑鼠事件：只處理右鍵框選
-    def on_mouse(event, x, y, flags, param):
-        global mask, img_show
-        if event == cv2.EVENT_RBUTTONDOWN:
-            print("請框選消失的手臂區域，然後按 Enter")
-            # 在目前的視窗再次進行局部框選
-            sub_rect = cv2.selectROI(win_name, img_show, False)
-            if sub_rect[2] > 0 and sub_rect[3] > 0:
-                sx, sy, sw, sh = sub_rect
-                # 將該區域強制標記為「確定前景 (GC_FGD)」
-                mask[sy:sy+sh, sx:sx+sw] = cv2.GC_FGD
-                # 在畫面上畫個綠框標示已選取
-                cv2.rectangle(img_show, (sx, sy), (sx+sw, sy+sh), (0, 255, 0), 3)
-                print("局部區域已標記，請按 'n' 重新計算")
+# ===============================
+# 4. Interactive refinement loop
+# ===============================
+while True:
+    print("\n========== 修正選單 ==========")
+    print("[f] 補『前景』ROI（手臂、肩膀）")
+    print("[b] 移除『背景』ROI（地板、泥土）")
+    print("[q] 完成並輸出結果")
+    print("==============================")
 
-    cv2.setMouseCallback(win_name, on_mouse)
+    key = cv2.waitKey(0) & 0xFF
 
-    while True:
-        # 顯示目前的圖 (包含你畫的綠色小框)
-        cv2.imshow(win_name, img_show)
+    # ===========================
+    # Quit
+    # ===========================
+    if key == ord('q'):
+        break
+
+    # ===========================
+    # Foreground ROI (LOCAL GrabCut)
+    # ===========================
+    if key == ord('f'):
+        fg_roi = select_roi_or_skip(
+            "Select FG ROI",
+            img,
+            "框選『要補的前景 ROI』（Cancel 跳過）"
+        )
+        if fg_roi is None:
+            continue
+
+        cv2.destroyAllWindows()
+        cv2.waitKey(1)
         
-        # 同時顯示去背後的結果對照
-        mask_tmp = np.where((mask == 2) | (mask == 0), 0, 1).astype('uint8')
-        res = img_target * mask_tmp[:, :, np.newaxis]
-        cv2.namedWindow('Current Result', cv2.WINDOW_NORMAL)
-        cv2.resizeWindow('Current Result', 600, 800)
-        cv2.imshow('Current Result', res)
+        fx, fy, fw, fh = fg_roi
+        roi_img = img[fy:fy+fh, fx:fx+fw]
+        rh, rw = roi_img.shape[:2]
 
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('n'): # 按 n 重新計算
-            print("正在根據局部框選重新計算...")
-            cv2.grabCut(img_target, mask, rect, bgdModel, fgdModel, 5, cv2.GC_INIT_WITH_MASK)
-        elif key == ord('q'): # 按 q 退出
-            break
+        roi_mask = np.zeros((rh, rw), np.uint8)
+        roi_bgd = np.zeros((1, 65), np.float64)
+        roi_fgd = np.zeros((1, 65), np.float64)
 
-    # 最後處理
-    mask_final = np.where((mask == 2) | (mask == 0), 0, 255).astype('uint8')
-    mask_final = cv2.GaussianBlur(mask_final, (5, 5), 0)
-    cv2.imwrite('final_mask.png', mask_final)
+        # 局部 GrabCut（假設 ROI 內有前景）
+        cv2.grabCut(
+            roi_img,
+            roi_mask,
+            (1, 1, rw-2, rh-2),
+            roi_bgd, roi_fgd,
+            ITER_LOCAL,
+            cv2.GC_INIT_WITH_RECT
+        )
 
-    cv2.destroyAllWindows()
+        roi_fg = np.where(
+            (roi_mask == cv2.GC_FGD) | (roi_mask == cv2.GC_PR_FGD),
+            255, 0
+        ).astype(np.uint8)
+
+        # 合併回全域前景
+        global_fg = np.where(
+            (mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD),
+            255, 0
+        ).astype(np.uint8)
+
+        global_fg[fy:fy+fh, fx:fx+fw] = cv2.bitwise_or(
+            global_fg[fy:fy+fh, fx:fx+fw],
+            roi_fg
+        )
+
+        mask[global_fg > 0] = cv2.GC_PR_FGD
+
+        cv2.grabCut(
+            img, mask, None,
+            bgdModel, fgdModel,
+            ITER_GLOBAL,
+            cv2.GC_INIT_WITH_MASK
+        )
+
+        show_current(img, mask, "After FG ROI Refinement")
+
+    # ===========================
+    # Background ROI (LOCAL GrabCut)
+    # ===========================
+    if key == ord('b'):
+        bg_roi = select_roi_or_skip(
+            "Select BG ROI",
+            img,
+            "框選『要移除的背景 ROI』（Cancel 跳過）"
+        )
+        if bg_roi is None:
+            continue
+        
+        cv2.destroyAllWindows()
+        cv2.waitKey(1)
+
+        bx, by, bw, bh = bg_roi
+        roi_img = img[by:by+bh, bx:bx+bw]
+        rh, rw = roi_img.shape[:2]
+
+        roi_mask = np.zeros((rh, rw), np.uint8)
+        roi_bgd = np.zeros((1, 65), np.float64)
+        roi_fgd = np.zeros((1, 65), np.float64)
+
+        # 局部 GrabCut（假設 ROI 內是背景）
+        cv2.grabCut(
+            roi_img,
+            roi_mask,
+            (1, 1, rw-2, rh-2),
+            roi_bgd, roi_fgd,
+            ITER_LOCAL,
+            cv2.GC_INIT_WITH_RECT
+        )
+
+        roi_bg = np.where(
+            (roi_mask == cv2.GC_BGD) | (roi_mask == cv2.GC_PR_BGD),
+            255, 0
+        ).astype(np.uint8)
+
+        # 從全域前景中扣掉背景
+        global_fg = np.where(
+            (mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD),
+            255, 0
+        ).astype(np.uint8)
+
+        global_fg[by:by+bh, bx:bx+bw][roi_bg > 0] = 0
+
+        # 更新 mask
+        mask[:] = cv2.GC_BGD
+        mask[global_fg > 0] = cv2.GC_PR_FGD
+
+        cv2.grabCut(
+            img, mask, None,
+            bgdModel, fgdModel,
+            ITER_GLOBAL,
+            cv2.GC_INIT_WITH_MASK
+        )
+
+        show_current(img, mask, "After BG ROI Removal")
+
+# ===============================
+# 5. Final result
+# ===============================
+final_mask = np.where(
+    (mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD),
+    255, 0
+).astype(np.uint8)
+
+result = cv2.bitwise_and(img, img, mask=final_mask)
+
+cv2.namedWindow("Final Result", cv2.WINDOW_NORMAL)
+cv2.imshow("Final Result", result)
+cv2.resizeWindow("Final Result", DISPLAY_SIZE[0], DISPLAY_SIZE[1])
+cv2.waitKey(0)
+cv2.destroyAllWindows()
