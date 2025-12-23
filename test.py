@@ -3,11 +3,30 @@ import numpy as np
 import math
 
 # =========================
+# 0. PRE-PROCESS FUNCTION (必須放在 SETUP 前面)
+# =========================
+def preprocess_foreground(img):
+    """結合裂痕修復與對比度增強"""
+    if img is None: return None
+    # 1. 裂痕修復 (Inpaint)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    _, crack_mask = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY)
+    crack_mask = cv2.dilate(crack_mask, np.ones((3,3), np.uint8), iterations=1)
+    img_fixed = cv2.inpaint(img, crack_mask, 3, cv2.INPAINT_TELEA)
+
+    # 2. 對比度增強 (CLAHE)
+    lab = cv2.cvtColor(img_fixed, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    img_enhanced = cv2.merge((clahe.apply(l), a, b))
+    return cv2.cvtColor(img_enhanced, cv2.COLOR_LAB2BGR)
+
+# =========================
 # 1. SETUP
 # =========================
 try:
-    fg_img = cv2.imread("Dataset/adip_final_dataset/4/104.jpg")
-    bg_img = cv2.imread("Dataset/adip_final_dataset/sidewalk.png")
+    fg_img = cv2.imread("old_photo_dataset/12/0010053x1.png")
+    bg_img = cv2.imread("old_photo_dataset/12/10080.jpg")
 
     # fg_img = cv2.imread("Dataset/adip_final_dataset/target.jpg")
     # bg_img = cv2.imread("Dataset/adip_final_dataset/background.jpg")
@@ -15,8 +34,18 @@ try:
     # fg_img = cv2.imread("Dataset/adip_final_dataset/10116.jpg")
     # bg_img = cv2.imread("Dataset/adip_final_dataset/10117.jpg")
     
-    # fg_img = cv2.imread("Dataset/adip_final_dataset/guy2.jpg")
-    # bg_img = cv2.imread("Dataset/adip_final_dataset/friend2.jpg")
+    # fg_img = cv2.imread("target.jpg")
+    # bg_img = cv2.imread("background.jpg")
+    if fg_img is not None:
+    # 彈出視窗讓使用者決定
+        cv2.namedWindow("Preprocess or not",cv2.WINDOW_NORMAL)
+        cv2.imshow("Preprocess or not", fg_img)
+        print(">>> 讀取成功。若需修復舊照裂痕/增強對比請按 'P'，否則按任意鍵跳過...")
+        k = cv2.waitKey(0)
+        if k == ord('p') or k == ord('P'):
+            fg_img = preprocess_foreground(fg_img) # 直接沿用變數名
+            print(">>> 預處理完成。")
+        cv2.destroyAllWindows()
     if fg_img is None:
         fg_img = np.zeros((400, 400, 3), np.uint8)
         cv2.circle(fg_img, (200, 200), 100, (0, 0, 255), -1)
@@ -35,7 +64,8 @@ state = {
     "fg_cut": None,         
     "fg_mask": None,        
     "fg_cut_mask": None, 
-    "remove_fg_mode": False,   
+    "remove_fg_mode": False, 
+    "extraction_mask" : None,  
     "drawing": False,
     "rect": (0,0,0,0),
     "ix": -1, "iy": -1,
@@ -127,6 +157,7 @@ def update_cutout():
     if state["fg_mask"] is None: return
     # We include both Definite (1) and Probable (3) foregrounds
     binary = np.where((state["fg_mask"] == cv2.GC_FGD) | (state["fg_mask"] == cv2.GC_PR_FGD), 1, 0).astype(np.uint8)
+    state["extraction_mask"] = (binary * 255).astype(np.uint8)
     ys, xs = np.where(binary == 1)
     if len(ys) > 0:
         y1, y2 = ys.min(), ys.max() + 1
@@ -247,7 +278,7 @@ def on_fg_click(event, x, y, flags, param):
         if w > 10 and h > 10:
 
         # =================================================
-        # ⭐ REMOVE WRONG FOREGROUND (SAFE VERSION)
+        # REMOVE WRONG FOREGROUND (SAFE VERSION)
         # =================================================
             if state.get("remove_fg_mode", False):
             # 🚧 保護：尚未初始化 GrabCut 時，不能移除
@@ -255,7 +286,7 @@ def on_fg_click(event, x, y, flags, param):
                     print(">>> Remove FG ignored: no foreground initialized yet.", flush=True)
                     return
 
-                save_state()  # ✅ 現在才安全
+                save_state()
 
                 rx, ry, rw, rh = final_rect
                 mask_h, mask_w = state["fg_mask"].shape
@@ -270,7 +301,7 @@ def on_fg_click(event, x, y, flags, param):
                     None,
                     state["bgdModel"],
                     state["fgdModel"],
-                    5,
+                    10,
                     cv2.GC_INIT_WITH_MASK
                 )
 
@@ -279,8 +310,8 @@ def on_fg_click(event, x, y, flags, param):
                 return
         # =================================================
 
-        # ---------- 原本補前景流程 ----------
-        save_state()  # ← 這裡才是原本該存的地方
+        # ---------- Origin add foreground ----------
+        save_state()
 
         if not state["initialized"]:
             state["fg_mask"] = np.zeros(fg_img.shape[:2], np.uint8)
@@ -290,7 +321,7 @@ def on_fg_click(event, x, y, flags, param):
                 final_rect,
                 state["bgdModel"],
                 state["fgdModel"],
-                7,
+                10,
                 cv2.GC_INIT_WITH_RECT
             )
             state["initialized"] = True
@@ -480,6 +511,7 @@ cv2.setMouseCallback("Background", on_bg_click)
 
 print("--- CONTROLS ---")
 print("[Left Drag] FG Window: Select parts of the object.")
+print("[x]         REMOVE THE WRONG FOREGROUND TO BACKGROUND")
 print("[SPACE]     LOCK SELECTION (Do this between steps!).")
 print("[Z]         UNDO last mask change.")
 print("[R]         Toggle Patch Mode.")
@@ -504,7 +536,11 @@ while True:
 
     # 2. Background Composition
     final_comp = bg_img.copy()
-    final_mask_layer = np.zeros(bg_img.shape[:2], dtype=np.uint8)
+    final_mask_layer = (
+    state["extraction_mask"].copy()
+    if state["extraction_mask"] is not None
+    else np.zeros(fg_img.shape[:2], dtype=np.uint8)
+    )
 
     hs = state["handle_size"]
 
@@ -595,8 +631,8 @@ while True:
 
                 final_comp[y1:y2, x1:x2] = (fg_to_blend * alpha + roi * (1.0 - alpha)).astype(np.uint8)
 
-                visible_mask_part = cv2.bitwise_and(mask_crop, cv2.bitwise_not(occ_crop))
-                final_mask_layer[y1:y2, x1:x2] = visible_mask_part
+                # visible_mask_part = cv2.bitwise_and(mask_crop, cv2.bitwise_not(occ_crop))
+                # final_mask_layer[y1:y2, x1:x2] = visible_mask_part
 
     # --- STEP B: VISUALIZATION COPY ---
     vis_comp = final_comp.copy()
@@ -709,8 +745,8 @@ while True:
 
     elif key == ord('s'):
         cv2.imwrite("saved_result.jpg", final_comp)
-        cv2.imwrite("saved_mask.png", final_mask_layer)
-        print(">>> Saved 'saved_result.jpg' and 'saved_mask.png'!")
+        cv2.imwrite("saved_mask.jpg", final_mask_layer)
+        print(">>> Saved 'saved_result.jpg' and 'saved_mask.jpg'!")
     elif key == 13: # Enter
         if state["remove_mode"] and state["patch_step"] == 2:
             tx, ty, tw, th = state["target_rect"]
