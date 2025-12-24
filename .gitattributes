@@ -1,0 +1,2 @@
+dist/test_ui filter=lfs diff=lfs merge=lfs -text
+build/test_ui/*.pkg filter=lfs diff=lfs merge=lfs -text
