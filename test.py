@@ -25,7 +25,7 @@ def preprocess_foreground(img):
 # 1. SETUP
 # =========================
 try:
-    fg_img = cv2.imread("old_photo_dataset/12/0010053x1.png")
+    fg_img = cv2.imread("target.jpg")
     bg_img = cv2.imread("old_photo_dataset/12/10080.jpg")
 
     # fg_img = cv2.imread("Dataset/adip_final_dataset/target.jpg")
