@@ -71,6 +71,50 @@ class ImageUtils:
         M[1, 2] += (nH / 2) - cY
         return cv2.warpAffine(image, M, (nW, nH), flags=cv2.INTER_LINEAR)
 
+    @staticmethod
+    def is_old_photo(img):
+        if img is None: return False
+        
+        # Turn img to BGR if it's grayscale
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        # A.Thresholding to find bright cracks
+        _, crack_mask = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY)
+        crack_ratio = np.sum(crack_mask > 0) / (img.shape[0] * img.shape[1])
+
+        # B. Analyze color stats
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        h, s, v = cv2.split(hsv)
+        avg_saturation = np.mean(s)
+        avg_hue = np.mean(h)
+
+        # old photo features:
+        # 1. High crack ratio
+        # 2. Sepia tone: low saturation, hue in yellow-orange range
+        is_cracked = crack_ratio > 0.0005 
+        is_sepia_tone = (avg_saturation < 100) and (10 < avg_hue < 40)
+
+        return is_cracked or is_sepia_tone
+
+    @staticmethod
+    def repair_old_photo(img):
+        if img is None: return None
+        
+        # Repair Steps:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        _, crack_mask = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY)
+        kernel = np.ones((3, 3), np.uint8)
+        crack_mask = cv2.dilate(crack_mask, kernel, iterations=1)
+        img_fixed = cv2.inpaint(img, crack_mask, 3, cv2.INPAINT_TELEA)
+        
+        # Enhance Contrast using CLAHE
+        lab = cv2.cvtColor(img_fixed, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        cl = clahe.apply(l)
+        img_enhanced = cv2.merge((cl, a, b))
+        return cv2.cvtColor(img_enhanced, cv2.COLOR_LAB2BGR)
+
 # ==========================================
 # 2. CANVAS WIDGET
 # ==========================================
@@ -1105,42 +1149,62 @@ class MainWindow(QMainWindow):
 
     # --- Interaction Helpers ---
     def load_fg(self):
-            p, _ = QFileDialog.getOpenFileName(self, "Load FG")
-            if p:
-                # Use robust loading here too
-                img = cv2.imdecode(np.fromfile(p, dtype=np.uint8), cv2.IMREAD_COLOR)
+        p, _ = QFileDialog.getOpenFileName(self, "Load FG")
+        if p:
+            img = cv2.imdecode(np.fromfile(p, dtype=np.uint8), cv2.IMREAD_COLOR)
+            
+            if img is None:
+                print("Error: Could not load foreground image.")
+                return
+            
+            # Automatic Old Photo Detection and Repair
+            if ImageUtils.is_old_photo(img):
+                reply = QMessageBox.question(
+                    self, 'Determining whether it is an old photograph', 
+                    "If a photo has cracks or looks faded, should we automatically fix and enhance it?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
                 
-                if img is None:
-                    print("Error: Could not load foreground image.")
-                    return
-
-                self.fg_img_orig = img
-                self.gc_initialized = False 
-                self.mask = None
-                self.canvas_fg.update_display(self.fg_img_orig)
-                
-                # Optional: Clear the cutout from the result when loading a new person
-                self.fg_cutout = None
-                self.process_composition()
+                # If user agrees, perform repair
+                if reply == QMessageBox.StandardButton.Yes:
+                    img = ImageUtils.repair_old_photo(img)
+                    print(">>> Foreground has been automatically restored and enhanced using CLAHE")
+            
+            self.fg_img_orig = img
+            self.gc_initialized = False 
+            self.mask = None
+            self.canvas_fg.update_display(self.fg_img_orig)
+            
+            self.fg_cutout = None
+            self.process_composition()
 
     def load_bg(self):
-            p, _ = QFileDialog.getOpenFileName(self, "Load BG")
-            if p:
-                # 1. Use a standard numpy loader to handle paths with special chars/Unicode
-                # (cv2.imread often fails on Windows paths with non-English characters)
-                img = cv2.imdecode(np.fromfile(p, dtype=np.uint8), cv2.IMREAD_COLOR)
-                
-                # 2. Check if load was successful
-                if img is None:
-                    print("Error: Could not load background image.")
-                    return
+        p, _ = QFileDialog.getOpenFileName(self, "Load BG")
+        if p:
+            img = cv2.imdecode(np.fromfile(p, dtype=np.uint8), cv2.IMREAD_COLOR)
+            
+            if img is None:
+                print("Error: Could not load background image.")
+                return
 
-                # 3. Only now do we overwrite the previous state
-                self.bg_img_orig = img
-                self.occlusion_mask = np.zeros(self.bg_img_orig.shape[:2], dtype=np.uint8)
-                self.pos_x, self.pos_y = self.bg_img_orig.shape[1]//2, self.bg_img_orig.shape[0]//2
+            # Automatic Old Photo Detection and Repair
+            if ImageUtils.is_old_photo(img):
+                reply = QMessageBox.question(
+                    self, 'Determining whether it is an old photograph', 
+                    "If a photo has cracks or looks faded, should we automatically fix and enhance it?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
                 
-                self.process_composition()
+                if reply == QMessageBox.StandardButton.Yes:
+                    img = ImageUtils.repair_old_photo(img)
+                    print(">>> >>> Background has been automatically restored and enhanced using CLAHE")
+
+            self.bg_img_orig = img
+            # Reset occlusion mask and position
+            self.occlusion_mask = np.zeros(self.bg_img_orig.shape[:2], dtype=np.uint8)
+            self.pos_x, self.pos_y = self.bg_img_orig.shape[1]//2, self.bg_img_orig.shape[0]//2
+            
+            self.process_composition()
 
     def update_comp_params(self):
         self.flip_h = self.chk_flip.isChecked()
