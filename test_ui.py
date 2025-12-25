@@ -38,7 +38,7 @@ class ImageUtils:
         return cv2.cvtColor(res_lab, cv2.COLOR_LAB2BGR)
 
     @staticmethod
-    def apply_light_source(image, angle_deg, intensity=0.2):
+    def apply_light_source(image, angle_deg, intensity=0.2): #0.2
         """Applies directional lighting gradient."""
         h, w = image.shape[:2]
         if h == 0 or w == 0: return image
@@ -515,9 +515,11 @@ class MainWindow(QMainWindow):
 
         self.btn_lock = QPushButton("Lock Selection (SPACE)")
         self.btn_lock.clicked.connect(self.lock_selection)
+        self.btn_lock.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         
         self.btn_undo = QPushButton("Undo (Z)")
         self.btn_undo.clicked.connect(self.undo_cut)
+        self.btn_undo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         lay_normal.addWidget(self.btn_lock)
         lay_normal.addWidget(self.btn_undo)
@@ -541,6 +543,7 @@ class MainWindow(QMainWindow):
 
         self.btn_undo_patch = QPushButton("Undo (Z)")
         self.btn_undo_patch.clicked.connect(self.undo_cut)
+        self.btn_undo_patch.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         lay_patch.addWidget(self.lbl_patch)
         lay_patch.addWidget(self.btn_apply_patch)
@@ -561,6 +564,7 @@ class MainWindow(QMainWindow):
         
         self.btn_undo_occ = QPushButton("Undo (Z)")
         self.btn_undo_occ.clicked.connect(self.undo_cut)
+        self.btn_undo_occ.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         
         lay_occ.addWidget(self.btn_undo_occ)
         l_modes.addWidget(self.container_occ)
@@ -681,8 +685,8 @@ class MainWindow(QMainWindow):
 
     def load_defaults(self):
         try:
-            self.fg_img_orig = cv2.imread("indian.jpg")
-            self.bg_img_orig = cv2.imread("indian_friend.jpg")
+            self.fg_img_orig = cv2.imread("shoes.png")
+            self.bg_img_orig = cv2.imread("sidewalk.png")
             if self.fg_img_orig is None: raise Exception
             if self.bg_img_orig is None: raise Exception
         except:
