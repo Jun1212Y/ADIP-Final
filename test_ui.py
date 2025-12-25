@@ -131,8 +131,15 @@ class CanvasWidget(QWidget):
 
         # Interaction State
         self.is_dragging = False
+        self.last_mouse_pos = None
+        self.setMouseTracking(True) 
         self.drag_start = None
-        self.current_rect = None # For drawing box visuals
+        self.current_rect = None 
+        self.zoom_factor = 1.0  
+        self.setMouseTracking(True)
+        self.pan_offset = QPoint(0, 0)
+        self.is_panning = False
+        self.last_mouse_pan_pos = QPoint(0, 0)
 
     def update_display(self, cv_img):
         if cv_img is None: return
@@ -143,114 +150,114 @@ class CanvasWidget(QWidget):
         self.update()
 
     def get_img_coords(self, widget_pos):
-        if self.img_scale == 0: return 0, 0
-        img_x = int((widget_pos.x() - self.img_offset_x) / self.img_scale)
-        img_y = int((widget_pos.y() - self.img_offset_y) / self.img_scale)
-        return img_x, img_y
+        if not self.display_pixmap or self.img_scale == 0:
+            return 0, 0
+            
+        # 必須扣除 img_offset (包含 pan 的位移) 再除以縮放率
+        ix = int((widget_pos.x() - self.img_offset_x) / self.img_scale)
+        iy = int((widget_pos.y() - self.img_offset_y) / self.img_scale)
+        
+        # 限制範圍在圖片內
+        ix = max(0, min(ix, self.display_pixmap.width() - 1))
+        iy = max(0, min(iy, self.display_pixmap.height() - 1))
+        return ix, iy
     
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(40, 40, 40)) 
+        painter.fillRect(self.rect(), QColor(40, 40, 40)) # 背景色
 
-        if self.display_pixmap:
-            # 1. Scale Image
-            scaled_pixmap = self.display_pixmap.scaled(
-                self.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
-            )
-            self.img_offset_x = (self.width() - scaled_pixmap.width()) // 2
-            self.img_offset_y = (self.height() - scaled_pixmap.height()) // 2
-            self.img_scale = scaled_pixmap.width() / max(1, self.display_pixmap.width())
-            
-            painter.drawPixmap(self.img_offset_x, self.img_offset_y, scaled_pixmap)
+        if not self.display_pixmap:
+            # 沒圖時只顯示標籤
+            painter.setPen(QColor(200, 200, 200))
+            label = "FOREGROUND SOURCE" if self.canvas_type == "fg" else "BACKGROUND"
+            painter.drawText(10, 20, label)
+            return
 
-            # --- DRAW TRANSFORM HANDLES (RIGHT WINDOW) ---
-            if self.canvas_type == "bg" and self.main.current_mode == "normal" and self.main.active_geom:
-                # ... (Keep existing handle drawing code) ...
-                cx, cy, w, h = self.main.active_geom
-                sx = int(cx * self.img_scale + self.img_offset_x)
-                sy = int(cy * self.img_scale + self.img_offset_y)
-                sw = int(w * self.img_scale)
-                sh = int(h * self.img_scale)
-                
-                left, top = sx - sw // 2, sy - sh // 2
-                right, bottom = sx + sw // 2, sy + sh // 2
+        # --- 1. 計算縮放與位移 (整合 Zoom Factor) ---
+        # 基礎適應視窗的縮放
+        base_pixmap = self.display_pixmap.scaled(
+            self.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+        )
+        final_w = int(base_pixmap.width() * self.zoom_factor)
+        final_h = int(base_pixmap.height() * self.zoom_factor)
+        scaled_pixmap = base_pixmap.scaled(final_w, final_h, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
 
-                pen = QPen(QColor(0, 255, 255), 2, Qt.PenStyle.DashLine)
+        # 2. 計算最終位置：(基礎置中位置) + (手動拖動位移)
+        self.img_offset_x = (self.width() - scaled_pixmap.width()) // 2 + self.pan_offset.x()
+        self.img_offset_y = (self.height() - scaled_pixmap.height()) // 2 + self.pan_offset.y()
+        
+        # 更新縮放率 (用於筆刷座標計算)
+        self.img_scale = scaled_pixmap.width() / max(1, self.display_pixmap.width())
+        
+        painter.drawPixmap(self.img_offset_x, self.img_offset_y, scaled_pixmap)
+
+        # --- 2. 繪製 FG 筆刷預覽 ---
+        if self.canvas_type == "fg" and self.main.current_mode == "normal" and self.main.rb_sub_brush.isChecked():
+            if self.last_mouse_pos is not None:
+                display_radius = int(self.main.brush_size * self.img_scale)
+                pen = QPen(QColor(0, 255, 255, 255), 2, Qt.PenStyle.SolidLine)
                 painter.setPen(pen)
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawRect(left, top, sw, sh)
-
-                handle_size = 10
-                painter.setBrush(QColor(255, 255, 255))
-                painter.setPen(QColor(0, 0, 0))
-                corners = [(left, top), (right, top), (left, bottom), (right, bottom)]
-                for (hx, hy) in corners:
-                    painter.drawRect(hx - handle_size//2, hy - handle_size//2, handle_size, handle_size)
-
-                painter.setBrush(QColor(255, 100, 100))
-                rot_x, rot_y = int(sx), int(top - 30)
-                painter.drawLine(int(sx), int(top), rot_x, rot_y)
-                painter.drawEllipse(QPoint(rot_x, rot_y), 6, 6)
-
-            # 2. Draw Visuals (Generic Rectangles)
-            if self.current_rect and not self.main.is_picking_harmony:
-                pen = QPen(QColor(0, 255, 255), 2, Qt.PenStyle.SolidLine)
-                painter.setPen(pen)
-                rx = int(self.current_rect.x() * self.img_scale + self.img_offset_x)
-                ry = int(self.current_rect.y() * self.img_scale + self.img_offset_y)
-                rw = int(self.current_rect.width() * self.img_scale)
-                rh = int(self.current_rect.height() * self.img_scale)
-                painter.drawRect(rx, ry, rw, rh)
-
-            # 3. Patch Tool Visuals
-            if self.canvas_type == "bg" and self.main.current_mode == "patch":
-                # ... (Keep existing patch visuals) ...
-                if self.main.patch_target:
-                    pen = QPen(QColor(0, 0, 255), 2, Qt.PenStyle.DashLine)
-                    painter.setPen(pen)
-                    r = self.main.patch_target
-                    rx = int(r.x() * self.img_scale + self.img_offset_x)
-                    ry = int(r.y() * self.img_scale + self.img_offset_y)
-                    painter.drawRect(rx, ry, int(r.width()*self.img_scale), int(r.height()*self.img_scale))
+                painter.setBrush(QColor(0, 255, 255, 50)) 
+                painter.drawEllipse(self.last_mouse_pos, display_radius, display_radius)
                 
-                if self.main.patch_source:
-                    pen = QPen(QColor(0, 255, 0), 2, Qt.PenStyle.DashLine)
-                    painter.setPen(pen)
-                    r = self.main.patch_source
-                    rx = int(r.x() * self.img_scale + self.img_offset_x)
-                    ry = int(r.y() * self.img_scale + self.img_offset_y)
-                    painter.drawRect(rx, ry, int(r.width()*self.img_scale), int(r.height()*self.img_scale))
+                # 十字準星
+                painter.drawLine(self.last_mouse_pos.x() - 5, self.last_mouse_pos.y(),
+                                 self.last_mouse_pos.x() + 5, self.last_mouse_pos.y())
+                painter.drawLine(self.last_mouse_pos.x(), self.last_mouse_pos.y() - 5,
+                                 self.last_mouse_pos.x(), self.last_mouse_pos.y() + 5)
 
-            # 4. Occlusion Brush
-            if self.canvas_type == "bg" and self.main.current_mode == "occlusion":
-                # ... (Keep existing occlusion brush) ...
-                pen = QPen(QColor(255, 255, 255), 1)
-                painter.setPen(pen)
-                mx = self.mapFromGlobal(QCursor.pos()).x()
-                my = self.mapFromGlobal(QCursor.pos()).y()
-                painter.drawEllipse(QPoint(mx, my), self.main.brush_size, self.main.brush_size)
+        # --- 3. 繪製 BG Transform Handles ---
+        if self.canvas_type == "bg" and self.main.current_mode == "normal" and self.main.active_geom:
+            cx, cy, w, h = self.main.active_geom
+            sx = int(cx * self.img_scale + self.img_offset_x)
+            sy = int(cy * self.img_scale + self.img_offset_y)
+            sw = int(w * self.img_scale)
+            sh = int(h * self.img_scale)
+            left, top = sx - sw // 2, sy - sh // 2
+            right, bottom = sx + sw // 2, sy + sh // 2
 
-            # --- NEW: Custom Harmony Visuals ---
-            if self.canvas_type == "bg":
-                # 1. Draw the box while dragging (Yellow Dash)
-                if self.main.is_picking_harmony and self.current_rect:
-                    pen = QPen(QColor(255, 255, 0), 2, Qt.PenStyle.DashLine)
-                    painter.setPen(pen)
-                    rx = int(self.current_rect.x() * self.img_scale + self.img_offset_x)
-                    ry = int(self.current_rect.y() * self.img_scale + self.img_offset_y)
-                    painter.drawRect(rx, ry, int(self.current_rect.width()*self.img_scale), int(self.current_rect.height()*self.img_scale))
-                
-                # 2. Draw the finalized saved box (Solid Gold)
-                elif (self.main.chk_custom_harmony.isChecked() and self.main.custom_harmony_rect and self.main.is_box_visible):
-                    cx, cy, cw, ch = self.main.custom_harmony_rect
-                    pen = QPen(QColor(255, 215, 0), 2, Qt.PenStyle.SolidLine)
-                    painter.setPen(pen)
-                    sx = int(cx * self.img_scale + self.img_offset_x)
-                    sy = int(cy * self.img_scale + self.img_offset_y)
-                    painter.drawRect(sx, sy, int(cw*self.img_scale), int(ch*self.img_scale))
-                    painter.drawText(sx, sy - 5, "Color Source")
+            pen = QPen(QColor(0, 255, 255), 2, Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(left, top, sw, sh)
 
-        # Keep the global text labels at the end
+            # 控制點
+            handle_size = 10
+            painter.setBrush(QColor(255, 255, 255))
+            painter.setPen(QColor(0, 0, 0))
+            for hx, hy in [(left, top), (right, top), (left, bottom), (right, bottom)]:
+                painter.drawRect(hx - handle_size//2, hy - handle_size//2, handle_size, handle_size)
+
+            # 旋轉柄
+            painter.setBrush(QColor(255, 100, 100))
+            rot_x, rot_y = int(sx), int(top - 30)
+            painter.drawLine(int(sx), int(top), rot_x, rot_y)
+            painter.drawEllipse(QPoint(rot_x, rot_y), 6, 6)
+
+        # --- 4. 繪製 ROI 矩形 (ROI Box) ---
+        if self.current_rect and not self.main.is_picking_harmony:
+            pen = QPen(QColor(0, 255, 255), 2, Qt.PenStyle.SolidLine)
+            painter.setPen(pen)
+            rx = int(self.current_rect.x() * self.img_scale + self.img_offset_x)
+            ry = int(self.current_rect.y() * self.img_scale + self.img_offset_y)
+            rw = int(self.current_rect.width() * self.img_scale)
+            rh = int(self.current_rect.height() * self.img_scale)
+            painter.drawRect(rx, ry, rw, rh)
+
+        # --- 5. 其他視覺 (Patch Tool, Harmony 等) ---
+        # (這裡請保留你原本的 Patch 和 Harmony 繪製邏輯，只需確保座標計算都使用 self.img_scale 和 self.img_offset)
+        if self.canvas_type == "bg":
+            # Patch Tool 範例
+            if self.main.current_mode == "patch":
+                for attr, color in [('patch_target', QColor(0,0,255)), ('patch_source', QColor(0,255,0))]:
+                    rect = getattr(self.main, attr)
+                    if rect:
+                        painter.setPen(QPen(color, 2, Qt.PenStyle.DashLine))
+                        painter.drawRect(int(rect.x()*self.img_scale + self.img_offset_x),
+                                         int(rect.y()*self.img_scale + self.img_offset_y),
+                                         int(rect.width()*self.img_scale), int(rect.height()*self.img_scale))
+
+        # 最後繪製文字標籤
         painter.setPen(QColor(200, 200, 200))
         label = "FOREGROUND SOURCE" if self.canvas_type == "fg" else "BACKGROUND"
         painter.drawText(10, 20, label)
@@ -261,10 +268,18 @@ class CanvasWidget(QWidget):
         mx, my = event.pos().x(), event.pos().y() # Screen coords for handles
         
         # --- FG WINDOW ---
-        if self.canvas_type == "fg":
+        if self.canvas_type == "fg" and self.main.current_mode == "normal":
             self.is_dragging = True
             self.drag_start = (ix, iy)
-            self.current_rect = QRect(ix, iy, 0, 0)
+            
+            # 如果目前是「筆刷模式」
+            if self.main.rb_sub_brush.isChecked():
+                is_fg = (event.button() == Qt.MouseButton.LeftButton) # 左鍵加，其餘(右鍵)減
+                self.main.paint_grabcut_brush(ix, iy, is_fg)
+            # 如果是「ROI 模式」
+            elif self.main.rb_sub_roi.isChecked():
+                if event.button() == Qt.MouseButton.LeftButton:
+                    self.current_rect = QRect(ix, iy, 0, 0)
 
         # --- BG WINDOW ---
         elif self.canvas_type == "bg":
@@ -316,18 +331,50 @@ class CanvasWidget(QWidget):
                 if event.button() == Qt.MouseButton.LeftButton:
                     self.main.interaction_mode = 'move'
                     self.main.start_dragging_object(ix, iy)
+        # MiddleButton of Mouse to reset photo Zoom factor 
+        if event.button() == Qt.MouseButton.MiddleButton:
+            # 1. Ctrl + 中鍵：重置所有縮放與位移
+            if QApplication.keyboardModifiers() == Qt.KeyboardModifier.ControlModifier:
+                self.zoom_factor = 1.0
+                self.pan_offset = QPoint(0, 0)
+                print(">>> View Reset")
+                self.update()
+                return # 重置後不進入拖動狀態
+            
+            # 2. 單純中鍵：開始平移 (Panning)
+            self.is_panning = True
+            self.last_mouse_pan_pos = event.pos()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
 
     def mouseMoveEvent(self, event):
+        self.last_mouse_pos = event.pos() # 記錄目前的視窗座標
+        self.update() # 觸發重繪以更新筆刷圓圈
         if not self.display_pixmap: return
         ix, iy = self.get_img_coords(event.pos())
         mx, my = event.pos().x(), event.pos().y()
 
         # FG Logic
         if self.canvas_type == "fg" and self.is_dragging:
-            sx, sy = self.drag_start
-            self.current_rect = QRect(QPoint(sx, sy), QPoint(ix, iy)).normalized()
-            self.update()
-
+            # 情況 A：Standard Interaction 模式
+            if self.main.current_mode == "normal":
+                
+                # A-1: ROI 模式且按下左鍵 -> 畫矩形
+                if self.main.rb_sub_roi.isChecked() and (event.buttons() & Qt.MouseButton.LeftButton):
+                    sx, sy = self.drag_start
+                    self.current_rect = QRect(QPoint(sx, sy), QPoint(ix, iy)).normalized()
+                    self.update()
+                
+                # A-2: 筆刷模式
+                elif self.main.rb_sub_brush.isChecked():
+                    self.current_rect = None  # 確保不顯示任何矩形框
+                    
+                    if event.buttons() & Qt.MouseButton.LeftButton:
+                        # 左鍵塗抹：添加前景
+                        self.main.paint_grabcut_brush(ix, iy, is_fg=True)
+                    elif event.buttons() & Qt.MouseButton.RightButton:
+                        # 右鍵塗抹：移除前景
+                        self.main.paint_grabcut_brush(ix, iy, is_fg=False)
         # BG Logic
         elif self.canvas_type == "bg":
             # HANDLE TRANSFORM INTERACTIONS
@@ -384,6 +431,23 @@ class CanvasWidget(QWidget):
                 sx, sy = self.drag_start
                 self.current_rect = QRect(QPoint(sx, sy), QPoint(ix, iy)).normalized()
                 self.update()
+        #Panning Move
+        self.last_mouse_pos = event.pos()
+        if self.is_panning:
+           # 計算本次移動的差距
+            delta = event.pos() - self.last_mouse_pan_pos
+            self.pan_offset += delta
+            self.last_mouse_pan_pos = event.pos()
+            self.update() # 觸發重繪
+
+        if self.main.is_drawing:
+            # 根據按住的是左鍵還是右鍵決定前/背景
+            is_fg = bool(event.buttons() & Qt.MouseButton.LeftButton)
+            # 持續在 Mask 上塗抹，但不執行耗時運算
+            self.main.paint_grabcut_brush(ix, iy, is_fg=is_fg)
+            self.update()
+
+        return
 
     def mouseReleaseEvent(self, event):
         # Reset Interaction Modes
@@ -392,7 +456,15 @@ class CanvasWidget(QWidget):
         
         # Reset Dragging Flags
         if self.is_dragging:
+            if self.canvas_type == "fg" and self.main.current_mode == "normal":
+                # 只有在 ROI 模式且左鍵放開時才執行大範圍 GrabCut
+                if self.main.rb_sub_roi.isChecked() and event.button() == Qt.MouseButton.LeftButton:
+                    if self.current_rect and self.current_rect.width() > 5:
+                        self.main.perform_grabcut(self.current_rect)
+                    self.current_rect = None
+            
             self.is_dragging = False
+            self.update()
 
             if self.canvas_type == "bg" and self.main.is_picking_harmony and self.current_rect:
                 # Save the rect coordinates
@@ -416,8 +488,74 @@ class CanvasWidget(QWidget):
                 self.current_rect = None; self.update()
             elif self.canvas_type == "bg" and self.main.current_mode == "normal":
                 self.main.stop_dragging()
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self.is_panning = False
+            self.setCursor(Qt.CursorShape.CrossCursor) # 恢復十字準星
+            return
 
     def wheelEvent(self, event):
+        # Photo Window Zoom
+        # 1. 圖片縮放 (Ctrl + 滾輪)
+        modifiers = QApplication.keyboardModifiers()
+        
+        # Ctrl + 滾輪 = 中心縮放
+        if modifiers == Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y()
+            
+            # 更新縮放倍率
+            step = 1.1 if delta > 0 else 0.9
+            self.zoom_factor = max(0.2, min(self.zoom_factor * step, 10.0))
+            
+            # 如果縮放接近 1.0，自動歸零位移，讓圖片回到正中央
+            if 0.95 <= self.zoom_factor <= 1.05:
+                self.zoom_factor = 1.0
+                self.pan_offset = QPoint(0, 0)
+            
+            self.update()
+            event.accept()
+            
+        # 單純滾輪 = 調整筆刷大小 (FG 視窗)
+        elif self.canvas_type == "fg" and self.main.current_mode == "normal" and self.main.rb_sub_brush.isChecked():
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self.main.brush_size = min(150, self.main.brush_size + 2)
+            else:
+                self.main.brush_size = max(1, self.main.brush_size - 2)
+            self.update()
+            event.accept()
+
+        # 2. 筆刷大小調整 (FG 視窗, 無 Ctrl)
+        elif self.canvas_type == "fg" and self.main.current_mode == "normal" and self.main.rb_sub_brush.isChecked():
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self.main.brush_size = min(150, self.main.brush_size + 2)
+            else:
+                self.main.brush_size = max(1, self.main.brush_size - 2)
+            self.update()
+            event.accept()
+        #FG Brush mode Zoom
+        if self.canvas_type == "fg" and self.main.current_mode == "normal" and self.main.rb_sub_brush.isChecked():
+            # 取得滾輪轉動的方向 (angleDelta().y() > 0 代表向上捲動)
+            delta = event.angleDelta().y()
+            
+            # 根據捲動方向增減筆刷大小 (每次調整 2 像素)
+            if delta > 0:
+                self.main.brush_size = min(150, self.main.brush_size + 2)
+            else:
+                self.main.brush_size = max(1, self.main.brush_size - 2)
+            
+            # 同步更新 UI 上的 Slider 數值 (如果你還留著 Slider 的話)
+            if hasattr(self.main, 'sld_brush'):
+                self.main.sld_brush.setValue(self.main.brush_size)
+            
+            # 立即重畫，讓圓圈預覽跟著變大變小
+            self.update()
+            
+            # 阻止事件繼續傳遞 (避免滾動到旁邊的 Scroll Area)
+            event.accept()
+        else:
+            # 如果不是筆刷模式，執行原本的捲動行為
+            super().wheelEvent(event)
         if self.canvas_type == "bg":
             delta = event.angleDelta().y()
             if self.main.current_mode == "occlusion":
@@ -427,6 +565,7 @@ class CanvasWidget(QWidget):
             elif self.main.current_mode == "move":
                 change = 0.05 if delta > 0 else -0.05
                 self.main.update_scale_scroll(change)
+        
 
 # ==========================================
 # 3. MAIN APPLICATION WINDOW
@@ -448,6 +587,9 @@ class MainWindow(QMainWindow):
         self.mask = None
         self.bgdModel = np.zeros((1, 65), np.float64)
         self.fgdModel = np.zeros((1, 65), np.float64)
+        self.is_drawing = False
+        self.last_roi = None
+        self.brush_size = 20 
         self.gc_initialized = False
         self.history = []
         
@@ -511,33 +653,67 @@ class MainWindow(QMainWindow):
         sb_layout.addWidget(g1)
 
         # 2. Modes
+        # 2. Modes
         g2 = QGroupBox("2. Modes")
         l2 = QVBoxLayout() 
         self.btn_grp = QButtonGroup()
 
-        self.rb_normal = QRadioButton("Standard Interaction") # Default
+        # --- Standard Interaction 區域 ---
+        standard_container = QWidget()
+        standard_vbox = QVBoxLayout(standard_container)
+        standard_vbox.setContentsMargins(0, 0, 0, 0)
+        standard_vbox.setSpacing(5)
+
+        self.rb_normal = QRadioButton("Standard Interaction")
+        self.rb_normal.setChecked(True)
+        self.rb_normal.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_grp.addButton(self.rb_normal)
+        self.rb_normal.toggled.connect(lambda: self.set_mode("normal"))
+        
+        # 把按鈕加進容器
+        standard_vbox.addWidget(self.rb_normal)
+
+        # 子項目面板
+        self.sub_mode_panel = QWidget()
+        sub_layout = QVBoxLayout(self.sub_mode_panel)
+        sub_layout.setContentsMargins(20, 0, 0, 10)
+        
+        self.rb_sub_roi = QRadioButton("ROI Box (Rectangle)")
+        self.rb_sub_roi.setChecked(True)
+        self.rb_sub_brush = QRadioButton("Refine Brush (L:+, R:-)")
+        
+        self.sub_btn_grp = QButtonGroup(self)
+        self.sub_btn_grp.addButton(self.rb_sub_roi)
+        self.sub_btn_grp.addButton(self.rb_sub_brush)
+        
+        sub_layout.addWidget(self.rb_sub_roi)
+        sub_layout.addWidget(self.rb_sub_brush)
+        
+        # 把子面板加進容器
+        standard_vbox.addWidget(self.sub_mode_panel)
+
+        # 把「整個組合容器」加進主佈局 l2
+        l2.addWidget(standard_container)
+
+        # --- 其他模式 (只加一次) ---
         self.rb_patch = QRadioButton("Patch Tool(r)")
         self.rb_occ = QRadioButton("Occlusion Paint(o)")
-
-        self.rb_normal.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        
         self.rb_patch.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.rb_occ.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        
-        # Default selection
-        self.rb_normal.setChecked(True)
 
-        # Add to button group
-        self.btn_grp.addButton(self.rb_normal)
         self.btn_grp.addButton(self.rb_patch)
         self.btn_grp.addButton(self.rb_occ)
         
-        self.rb_normal.toggled.connect(lambda: self.set_mode("normal"))
         self.rb_patch.toggled.connect(lambda: self.set_mode("patch"))
         self.rb_occ.toggled.connect(lambda: self.set_mode("occlusion"))
         
-        l2.addWidget(self.rb_normal)
-        l2.addWidget(self.rb_patch); 
+        # 這裡只加入 Patch 和 Occ，不要再加一次 rb_normal 了！
+        l2.addWidget(self.rb_patch)
         l2.addWidget(self.rb_occ)
+
+        # 最後建議在 l2 加入一個伸縮空間，防止元件被撐開
+        l2.addStretch()
 
         g2.setLayout(l2)
         sb_layout.addWidget(g2)
@@ -706,6 +882,54 @@ class MainWindow(QMainWindow):
         self.current_mode = mode
         self.process_composition()
 
+    def paint_grabcut_brush(self, x, y, is_fg=True):
+        if self.mask is None: return
+    
+    # 1. 確保數值是純標籤
+        val = cv2.GC_FGD if is_fg else cv2.GC_BGD
+    
+    # 2. 繪製（確保整數座標與關閉抗鋸齒）
+        ix, iy = int(x), int(y)
+        cv2.circle(self.mask, (ix, iy), self.brush_size, val, -1, lineType=cv2.LINE_8)
+    
+    # 3. 偵錯列印：確認剛剛畫下的那一塊像素到底是什麼值
+    # 取圓心點的值檢查
+        actual_val = self.mask[iy, ix]
+        print(f"Brush applied at ({ix}, {iy}), Target: {val}, Actual in mask: {actual_val}")
+        self.update_cutout_from_mask()
+    
+    def run_grabcut_iteration(self):
+        if not hasattr(self, 'last_roi') or self.last_roi is None or self.mask is None:
+            print(">>> 請先框選 ROI 區域")
+            return
+
+        try:
+            print(">>> 執行局部區域 (N鍵) 更新...")
+            r = self.last_roi
+            h_img, w_img = self.fg_img_orig.shape[:2]
+
+            # 取得整數座標並限制在圖片範圍內
+            x1 = max(0, int(r.x()))
+            y1 = max(0, int(r.y()))
+            x2 = min(w_img, int(r.x() + r.width()))
+            y2 = min(h_img, int(r.y() + r.height()))
+
+            # 1. 局部切片
+            img_roi = self.fg_img_orig[y1:y2, x1:x2]
+            mask_roi = self.mask[y1:y2, x1:x2]
+
+            # 2. 執行局部 GrabCut (使用 GC_INIT_WITH_MASK)
+            # 這裡迭代 5 次能讓邊緣更精準
+            cv2.grabCut(img_roi, mask_roi, None, 
+                        self.bgdModel, self.fgdModel, 5, cv2.GC_INIT_WITH_MASK)
+            
+            # 4. 放回原圖 mask 並更新顯示
+            self.mask[y1:y2, x1:x2] = mask_roi
+            self.update_cutout_from_mask()
+            print(">>> 局部優化完成。")
+
+        except Exception as e:
+            print(f"N-Key Update Error: {e}")
     # ==========================
     # LOGIC: GRABCUT (FIXED)
     # ==========================
@@ -755,6 +979,7 @@ class MainWindow(QMainWindow):
             if gw > 0 and gh > 0:
                 rect = (gx, gy, gw, gh)
                 try:
+                    self.last_roi = qrect
                     cv2.grabCut(self.fg_img_orig, self.mask, rect, self.bgdModel, self.fgdModel, 5, cv2.GC_INIT_WITH_RECT)
                     self.gc_initialized = True
                 except cv2.error as e:
@@ -777,6 +1002,47 @@ class MainWindow(QMainWindow):
 
         self.update_cutout_from_mask()
 
+    def execute_brush_grabcut(self):
+        if self.mask is None or self.fg_img_orig is None: return
+        try:
+            # --- A. 準備 Floodfill ---
+            h, w = self.fg_img_orig.shape[:2]
+            # flood_mask 必須比原圖寬高多 2
+            flood_mask = np.zeros((h + 2, w + 2), np.uint8)
+            
+            # 找到你剛才畫的所有線條點 (GC_FGD = 1)
+            seeds = np.column_stack(np.where(self.mask == cv2.GC_FGD))
+            
+            if len(seeds) > 0:
+                # 為了效能與效果平衡，每隔幾點取一個種子點做擴張
+                step = max(1, len(seeds) // 15)
+                for i in range(0, len(seeds), step):
+                    y, x = seeds[i]
+                    # loDiff/upDiff 是魔術棒的靈敏度，(20,20,20) 通常能抓出皮膚或衣服的色塊
+                    cv2.floodFill(self.fg_img_orig, flood_mask, (x, y), 255, 
+                                  loDiff=(20, 20, 20), upDiff=(20, 20, 20), 
+                                  flags=4 | cv2.FLOODFILL_MASK_ONLY)
+
+            # --- B. 將擴張結果套回 GrabCut Mask ---
+            # 裁切回原圖大小，並將擴張出的區域設為「可能前景 (3)」
+            refined_area = flood_mask[1:-1, 1:-1]
+            self.mask[refined_area == 255] = cv2.GC_PR_FGD
+            
+            # --- C. 徹底重啟 GrabCut ---
+            # 重設模型，讓它忘記「這塊區域以前是背景」的成見
+            self.main.bgdModel = np.zeros((1, 65), np.float64)
+            self.main.fgdModel = np.zeros((1, 65), np.float64)
+
+            # 執行迭代，這會根據你新抓出來的「色塊」重新偵測全身
+            cv2.grabCut(self.fg_img_orig, self.mask, None, 
+                        self.main.bgdModel, self.main.fgdModel, 5, cv2.GC_INIT_WITH_MASK)
+            
+            self.update_cutout_from_mask()
+            print(">>> 拖曳結束：全區域擴張並重新計算完成")
+            
+        except Exception as e:
+            print(f"Hybrid Error: {e}")
+        
     def lock_selection(self):
         """Converts PR_FGD (3) to FGD (1) so they don't get removed easily."""
         if self.mask is not None:
@@ -1200,6 +1466,12 @@ class MainWindow(QMainWindow):
         # Optional: 'Z' for Undo (already defined in button, but good to map here too)
         elif event.key() == Qt.Key.Key_Z:          
             self.undo_cut()
+
+        if event.key() == Qt.Key.Key_N:
+            if self.mask is not None:
+                self.run_grabcut_iteration()
+            else:
+                print(">>> Fixed the mask after Select ROI")
 
         # Pass other events (like standard system shortcuts) up the chain
         else:
