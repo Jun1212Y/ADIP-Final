@@ -262,7 +262,7 @@ class CanvasWidget(QWidget):
             # 2. Check Standard Tools
             if self.main.current_mode == "occlusion":
                 is_erasing = (event.button() == Qt.MouseButton.RightButton)
-                self.main.paint_occlusion(ix, iy, is_erasing)
+                self.main.paint_occlusion(ix, iy, is_erasing, is_new_stroke=True)
                 self.is_dragging = True
             elif self.main.current_mode == "patch":
                 self.is_dragging = True
@@ -335,8 +335,8 @@ class CanvasWidget(QWidget):
             # Visual Updates for other tools
             if self.main.current_mode == "occlusion":
                 self.update()
-                if event.buttons() & Qt.MouseButton.LeftButton: self.main.paint_occlusion(ix, iy, False)
-                elif event.buttons() & Qt.MouseButton.RightButton: self.main.paint_occlusion(ix, iy, True)
+                if event.buttons() & Qt.MouseButton.LeftButton: self.main.paint_occlusion(ix, iy, False, is_new_stroke=False)
+                elif event.buttons() & Qt.MouseButton.RightButton: self.main.paint_occlusion(ix, iy, True, is_new_stroke=False)
             elif self.main.current_mode == "patch" and self.is_dragging:
                 sx, sy = self.drag_start
                 self.current_rect = QRect(QPoint(sx, sy), QPoint(ix, iy)).normalized()
@@ -357,7 +357,7 @@ class CanvasWidget(QWidget):
                 # Basic validation
                 if w > 5 and h > 5:
                     self.main.custom_harmony_rect = (x, y, w, h)
-                    self.main.is_picking_harmony = False # Turn off picking mode automatically
+                    #self.main.is_picking_harmony = False # Turn off picking mode automatically
                     print("Custom Color Region Set.")
                     self.main.process_composition()
                 self.current_rect = None
@@ -433,6 +433,34 @@ class MainWindow(QMainWindow):
         self.setup_ui()
         self.load_defaults()
 
+    def save_state(self):
+        """Captures a snapshot of the entire current state."""
+        state_snapshot = {
+            # 1. Foreground Selection State
+            "gc_mask": self.mask.copy() if self.mask is not None else None,
+            "gc_bgd": self.bgdModel.copy(),
+            "gc_fgd": self.fgdModel.copy(),
+            "gc_init": self.gc_initialized,
+            
+            # 2. Background Image State (for Patch Tool changes)
+            "bg_img": self.bg_img_orig.copy() if self.bg_img_orig is not None else None,
+            
+            # 3. Occlusion Mask State (for Paint changes)
+            "occ_mask": self.occlusion_mask.copy() if self.occlusion_mask is not None else None,
+            
+            # 4. Transform State (so objects don't jump around on undo)
+            "transform_pos": (self.pos_x, self.pos_y),
+            "transform_scale": self.scale,
+            "transform_rot": self.rotation,
+            "transform_flip": self.flip_h
+        }
+
+        self.history.append(state_snapshot)
+        
+        # Limit history to 20 to prevent memory crashes
+        if len(self.history) > 20: 
+            self.history.pop(0)
+
     def setup_ui(self):
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
@@ -467,69 +495,87 @@ class MainWindow(QMainWindow):
         g1.setLayout(l1)
         sb_layout.addWidget(g1)
 
-        # 2. Modes
-        g2 = QGroupBox("2. Modes")
-        l2 = QVBoxLayout() 
+        # 2. Modes & Tools Container
+        g_modes = QGroupBox("2. Modes & Actions")
+        l_modes = QVBoxLayout()
         self.btn_grp = QButtonGroup()
 
-        self.rb_normal = QRadioButton("Standard Interaction") # Default
-        self.rb_patch = QRadioButton("Patch Tool(r)")
-        self.rb_occ = QRadioButton("Occlusion Paint(o)")
-
-        self.rb_normal.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.rb_patch.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.rb_occ.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        
-        # Default selection
+        # A. STANDARD INTERACTION SECTION
+        self.rb_normal = QRadioButton("Standard Interaction (Space)")
         self.rb_normal.setChecked(True)
+        self.rb_normal.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
-        # Add to button group
         self.btn_grp.addButton(self.rb_normal)
-        self.btn_grp.addButton(self.rb_patch)
-        self.btn_grp.addButton(self.rb_occ)
+        l_modes.addWidget(self.rb_normal)
+
+        # -- Child Buttons for Standard (Indented) --
+        self.container_normal = QWidget()
+        lay_normal = QVBoxLayout(self.container_normal)
+        lay_normal.setContentsMargins(20, 0, 0, 10) # Indent left by 20px
+
+        self.btn_lock = QPushButton("Lock Selection (SPACE)")
+        self.btn_lock.clicked.connect(self.lock_selection)
         
+        self.btn_undo = QPushButton("Undo (Z)")
+        self.btn_undo.clicked.connect(self.undo_cut)
+
+        lay_normal.addWidget(self.btn_lock)
+        lay_normal.addWidget(self.btn_undo)
+        l_modes.addWidget(self.container_normal) # Add container to main layout
+
+        # B. PATCH TOOL SECTION
+        self.rb_patch = QRadioButton("Patch Tool (R)")
+        self.rb_patch.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        self.btn_grp.addButton(self.rb_patch)
+        l_modes.addWidget(self.rb_patch)
+
+        # -- Child Buttons for Patch (Indented) --
+        self.container_patch = QWidget()
+        lay_patch = QVBoxLayout(self.container_patch)
+        lay_patch.setContentsMargins(20, 0, 0, 10) # Indent left by 20px
+
+        self.lbl_patch = QLabel("Step: Draw Target Box")
+        self.btn_apply_patch = QPushButton("Apply Patch (Enter)")
+        self.btn_apply_patch.clicked.connect(self.apply_patch)
+
+        self.btn_undo_patch = QPushButton("Undo (Z)")
+        self.btn_undo_patch.clicked.connect(self.undo_cut)
+
+        lay_patch.addWidget(self.lbl_patch)
+        lay_patch.addWidget(self.btn_apply_patch)
+        lay_patch.addWidget(self.btn_undo_patch)
+        l_modes.addWidget(self.container_patch)
+        self.container_patch.setVisible(False)
+
+        # C. OCCLUSION SECTION
+        self.rb_occ = QRadioButton("Occlusion Paint (O)")
+        self.rb_occ.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        self.btn_grp.addButton(self.rb_occ)
+        l_modes.addWidget(self.rb_occ)
+
+        self.container_occ = QWidget()
+        lay_occ = QVBoxLayout(self.container_occ)
+        lay_occ.setContentsMargins(20, 0, 0, 10)
+        
+        self.btn_undo_occ = QPushButton("Undo (Z)")
+        self.btn_undo_occ.clicked.connect(self.undo_cut)
+        
+        lay_occ.addWidget(self.btn_undo_occ)
+        l_modes.addWidget(self.container_occ)
+        self.container_occ.setVisible(False)
+
+        # Connect Toggles
         self.rb_normal.toggled.connect(lambda: self.set_mode("normal"))
         self.rb_patch.toggled.connect(lambda: self.set_mode("patch"))
         self.rb_occ.toggled.connect(lambda: self.set_mode("occlusion"))
-        
-        l2.addWidget(self.rb_normal)
-        l2.addWidget(self.rb_patch); 
-        l2.addWidget(self.rb_occ)
 
-        g2.setLayout(l2)
-        sb_layout.addWidget(g2)
-
-        # 3. Cut Controls
-        g3 = QGroupBox("3. Cut Actions")
-        l3 = QVBoxLayout()
-
-        btn_lock = QPushButton("Lock / Freeze Selection (SPACE)")
-        btn_lock.clicked.connect(self.lock_selection)
-        btn_lock.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-
-        btn_undo = QPushButton("Undo Last Cut (Z)")
-        btn_undo.clicked.connect(self.undo_cut)
-        btn_undo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-
-        l3.addWidget(btn_lock); l3.addWidget(btn_undo)
-        g3.setLayout(l3)
-        sb_layout.addWidget(g3)
-
-        # 4. Patch Controls
-        g4 = QGroupBox("4. Patch Actions")
-        l4 = QVBoxLayout()
-
-        self.lbl_patch = QLabel("Step: Draw Target Box")
-        btn_apply_patch = QPushButton("Apply Patch (Enter)")
-        btn_apply_patch.clicked.connect(self.apply_patch)
-        btn_apply_patch.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-
-        l4.addWidget(self.lbl_patch); l4.addWidget(btn_apply_patch)
-        g4.setLayout(l4)
-        sb_layout.addWidget(g4)
+        g_modes.setLayout(l_modes)
+        sb_layout.addWidget(g_modes)
 
         # 5. Transform & FX
-        g5 = QGroupBox("5. Adjustments")
+        g5 = QGroupBox("3. Adjustments")
         l5 = QVBoxLayout()
 
         # Scale
@@ -655,10 +701,19 @@ class MainWindow(QMainWindow):
         self.patch_step = 0
         self.patch_target = None
         self.patch_source = None
-        # Ensure the label exists before setting text (good practice)
+
         if hasattr(self, 'lbl_patch'):
             self.lbl_patch.setText("Step: Draw Target Box")
         
+        if hasattr(self, 'container_normal'):
+            self.container_normal.setVisible(mode == "normal")
+        
+        if hasattr(self, 'container_patch'):
+            self.container_patch.setVisible(mode == "patch")
+
+        if hasattr(self, 'container_occ'):
+            self.container_occ.setVisible(mode == "occlusion")
+
         # 2. Update mode and refresh
         self.current_mode = mode
         self.process_composition()
@@ -666,15 +721,53 @@ class MainWindow(QMainWindow):
     # ==========================
     # LOGIC: GRABCUT (FIXED)
     # ==========================
-    def save_state(self):
-        if self.mask is not None:
-            self.history.append({
-                "mask": self.mask.copy(),
-                "bgd": self.bgdModel.copy(),
-                "fgd": self.fgdModel.copy(),
-                "init": self.gc_initialized
-            })
-            if len(self.history) > 10: self.history.pop(0)
+    def undo_cut(self):
+        if not self.history:
+            print(">>> Nothing left to undo.")
+            return
+
+        print(">>> Undoing last action...")
+        state = self.history.pop()
+
+        # --- IMPORTANT: Check which version of history we have ---
+        # This handles both old history (if any exists) and new history
+        if "gc_mask" in state:
+            # NEW Format
+            if state["gc_mask"] is None:
+                self.mask = None
+                self.gc_initialized = False
+                self.bgdModel = np.zeros((1, 65), np.float64)
+                self.fgdModel = np.zeros((1, 65), np.float64)
+            else:
+                self.mask = state["gc_mask"]
+                self.bgdModel = state["gc_bgd"]
+                self.fgdModel = state["gc_fgd"]
+                self.gc_initialized = state["gc_init"]
+            
+            # Restore Global State (New features)
+            if state["bg_img"] is not None: self.bg_img_orig = state["bg_img"]
+            if state["occ_mask"] is not None: self.occlusion_mask = state["occ_mask"]
+            self.pos_x, self.pos_y = state["transform_pos"]
+            self.scale = state["transform_scale"]
+            self.rotation = state["transform_rot"]
+            self.flip_h = state["transform_flip"]
+
+        else:
+            # FALLBACK for Old Format (prevents the KeyError)
+            if state.get("mask") is None:
+                self.mask = None
+                self.gc_initialized = False
+                self.bgdModel = np.zeros((1, 65), np.float64)
+                self.fgdModel = np.zeros((1, 65), np.float64)
+            else:
+                self.mask = state["mask"]
+                self.bgdModel = state["bgd"]
+                self.fgdModel = state["fgd"]
+                self.gc_initialized = state["init"]
+
+        # Force updates on both canvases
+        self.update_cutout_from_mask() 
+        self.process_composition()
 
     def perform_grabcut(self, qrect):
         # 1. Get Image Dimensions
@@ -742,17 +835,7 @@ class MainWindow(QMainWindow):
             self.mask = np.where(self.mask == cv2.GC_PR_BGD, cv2.GC_BGD, self.mask)
             self.update_cutout_from_mask()
             print(">>> Selection Frozen/Locked.")
-
-    def undo_cut(self):
-        if self.history:
-            state = self.history.pop()
-            self.mask = state["mask"]
-            self.bgdModel = state["bgd"]
-            self.fgdModel = state["fgd"]
-            self.gc_initialized = state["init"]
-            self.update_cutout_from_mask()
-            print(">>> Undo.")
-
+            
     def update_cutout_from_mask(self):
         if self.mask is None: return
         
@@ -801,16 +884,15 @@ class MainWindow(QMainWindow):
                 x, y = int(qrect.x()), int(qrect.y())
                 w, h = int(qrect.width()), int(qrect.height())
                 
-                # 1. Clamp Top-Left (cannot be negative)
+                # 1. Clamp Top-Left
                 x = max(0, min(x, w_img - 1))
                 y = max(0, min(y, h_img - 1))
                 
-                # 2. Clamp Size (cannot go beyond image edge)
+                # 2. Clamp Size
                 w = min(w, w_img - x)
                 h = min(h, h_img - y)
                 
-                # 3. SeamlessClone often crashes if touching the EXACT edge (needs 1px border)
-                # We shrink it by 1px if it hits the edge, just to be safe.
+                # 3. Safety shrink for edge cases
                 if x + w >= w_img: w -= 1
                 if y + h >= h_img: h -= 1
                 if x == 0: x += 1; w -= 1
@@ -818,33 +900,37 @@ class MainWindow(QMainWindow):
                 
                 return x, y, w, h
 
-            # 1. Get Safe Coordinates for Target and Source
+            # 1. Get Safe Coordinates
             tx, ty, tw, th = get_safe_coords(self.patch_target)
             sx, sy, sw, sh = get_safe_coords(self.patch_source)
             
-            # 2. Check if we have valid dimensions after clamping
+            # 2. Check dimensions
             if tw <= 1 or th <= 1 or sw <= 1 or sh <= 1:
                 print("Error: Selection too small or too close to edge.")
                 return
 
-            # 3. Extract Source Patch
+            # 3. Extract Source
             src_patch = self.bg_img_orig[sy:sy+sh, sx:sx+sw]
             
             try:
-                # 4. Resize Source to match Target Size
-                # (SeamlessClone requires source and mask to match size)
+                # 4. Resize Source
                 src_patch = cv2.resize(src_patch, (tw, th))
                 
-                # 5. Create Mask (White)
+                # 5. Create Mask
                 mask = 255 * np.ones(src_patch.shape, src_patch.dtype)
                 
-                # 6. Calculate Center for SeamlessClone
+                # 6. Calculate Center
                 center = (int(tx + tw // 2), int(ty + th // 2))
+
+                # --- CORRECTED SECTION START ---
+                self.save_state() # Save Undo state right before modifying
                 
-                # 7. Apply Clone
+                # Apply Clone (Only once)
                 self.bg_img_orig = cv2.seamlessClone(
                     src_patch, self.bg_img_orig, mask, center, cv2.NORMAL_CLONE
                 )
+                # --- CORRECTED SECTION END ---
+
                 print("Patch Applied Successfully.")
 
                 # Reset State
@@ -1003,8 +1089,13 @@ class MainWindow(QMainWindow):
         if self.current_mode == "occlusion":
             red_overlay = np.zeros_like(comp)
             red_overlay[:,:,2] = 255
-            occ_bool = self.occlusion_mask > 0
-            comp[occ_bool] = cv2.addWeighted(comp[occ_bool], 0.7, red_overlay[occ_bool], 0.3, 0)
+            
+            # Safe check: Ensure mask exists
+            if self.occlusion_mask is not None:
+                occ_bool = self.occlusion_mask > 0
+                
+                if np.any(occ_bool):
+                    comp[occ_bool] = cv2.addWeighted(comp[occ_bool], 0.7, red_overlay[occ_bool], 0.3, 0)
 
         self.canvas_bg.update_display(comp)
 
@@ -1064,7 +1155,10 @@ class MainWindow(QMainWindow):
     def stop_dragging(self):
         self.is_dragging_obj = False
 
-    def paint_occlusion(self, x, y, is_erasing):
+    def paint_occlusion(self, x, y, is_erasing, is_new_stroke=False):
+        if is_new_stroke:
+             self.save_state()
+
         color = 0 if is_erasing else 255
         cv2.circle(self.occlusion_mask, (x, y), self.brush_size, color, -1)
         self.process_composition()
