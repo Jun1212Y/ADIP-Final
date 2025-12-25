@@ -19,6 +19,9 @@ with UI(unstable,testing...)
 python3 test_ui.py
 ```
 
+<img width="1847" height="1010" alt="image" src="https://github.com/user-attachments/assets/87874431-7e7f-4158-a0d5-d6b17005a036" />
+
+
 ## TO DO List
 1. Add shadow
 2. Old photo composition
