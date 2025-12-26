@@ -83,21 +83,9 @@ class ImageUtils:
         mean_h = np.mean(h)
         std_v = np.std(v) # Standard Deviation of brightness (Contrast)
 
-        # --- REVISED LOGIC ---
-        
-        # 1. Sepia Tone Detection
-        # Hue must be Yellow-Orange (10-35)
-        # Saturation must be moderate (20-90) - not too gray, not too vivid
         is_sepia = (10 <= mean_h <= 35) and (20 <= mean_s <= 90)
-
-        # 2. Old Black & White Detection
-        # Saturation must be very low (< 15)
-        # AND Contrast must be low (std_v < 60) - old photos are often faded
         is_faded_bw = (mean_s < 15) and (std_v < 60)
-
-        # Only return True if it matches these specific "Old Photo" styles
-        # We REMOVED the "crack_ratio" check because simple white pixels 
-        # (like sky or lights) were triggering false positives.
+        
         return is_sepia or is_faded_bw
     
     @staticmethod
@@ -429,16 +417,15 @@ class CanvasWidget(QWidget):
 
         # BG Logic
         elif self.canvas_type == "bg":
-            # HANDLE TRANSFORM INTERACTIONS
+            # HANDLE TRANSFORM INTERACTIONS            
+            if self.main.is_picking_harmony and self.is_dragging:
+                sx, sy = self.drag_start
+                self.current_rect = QRect(QPoint(sx, sy), QPoint(ix, iy)).normalized()
+                self.update()
+                return
+            
             if hasattr(self.main, 'interaction_mode'):
-
-                if self.main.is_picking_harmony and self.is_dragging:
-                    sx, sy = self.drag_start
-                    self.current_rect = QRect(QPoint(sx, sy), QPoint(ix, iy)).normalized()
-                    self.update()
-                    return
-                
-                # A. ROTATE
+            # A. ROTATE
                 if self.main.interaction_mode == 'rotate':
                     # Calculate angle relative to object center
                     if self.main.active_geom:
@@ -474,15 +461,15 @@ class CanvasWidget(QWidget):
                     self.main.drag_object(ix, iy)
                     return
 
-            # Visual Updates for other tools
-            if self.main.current_mode == "occlusion":
-                self.update()
-                if event.buttons() & Qt.MouseButton.LeftButton: self.main.paint_occlusion(ix, iy, False, is_new_stroke=False)
-                elif event.buttons() & Qt.MouseButton.RightButton: self.main.paint_occlusion(ix, iy, True, is_new_stroke=False)
-            elif self.main.current_mode == "patch" and self.is_dragging:
-                sx, sy = self.drag_start
-                self.current_rect = QRect(QPoint(sx, sy), QPoint(ix, iy)).normalized()
-                self.update()
+                # Visual Updates for other tools
+                if self.main.current_mode == "occlusion":
+                    self.update()
+                    if event.buttons() & Qt.MouseButton.LeftButton: self.main.paint_occlusion(ix, iy, False, is_new_stroke=False)
+                    elif event.buttons() & Qt.MouseButton.RightButton: self.main.paint_occlusion(ix, iy, True, is_new_stroke=False)
+                elif self.main.current_mode == "patch" and self.is_dragging:
+                    sx, sy = self.drag_start
+                    self.current_rect = QRect(QPoint(sx, sy), QPoint(ix, iy)).normalized()
+                    self.update()
         #Panning Move
         self.last_mouse_pos = event.pos()
         if self.is_panning:
@@ -1352,7 +1339,7 @@ class MainWindow(QMainWindow):
                     bg_crop = comp[y1:y2, x1:x2]
 
                     # Color Harmony
-                    fg_blend = fg_crop
+                    fg_blend = fg_crop.copy()
                     
                     # DEBUG PRINT 1
                     if not self.chk_harmony.isChecked():
@@ -1361,7 +1348,7 @@ class MainWindow(QMainWindow):
                     if self.chk_harmony.isChecked():
                         try:
                             # Determine which background reference to use
-                            target_ref = bg_crop # Default: area behind object
+                            target_ref = bg_crop.copy() # Default: area behind object
                             
                             # DEBUG PRINT 2
                             if self.chk_custom_harmony.isChecked():
@@ -1382,14 +1369,16 @@ class MainWindow(QMainWindow):
                                 ch = min(int(ch), comp.shape[0]-cy)
                                 
                                 if cw > 0 and ch > 0:
-                                    target_ref = self.bg_img_orig[cy:cy+ch, cx:cx+cw]
+                                    target_ref = self.bg_img_orig[cy:cy+ch, cx:cx+cw].copy()
                                 else:
                                     print(">> CUSTOM FAIL: Rect size is 0 after bounds check")
 
                             # Use Slider Strength
                             strength = self.sld_harmony_strength.value() / 100.0
-                            harmonized = ImageUtils.match_color_stats(fg_crop, target_ref)
-                            fg_blend = cv2.addWeighted(fg_crop, (1.0 - strength), harmonized, strength, 0)
+
+                            if target_ref.size > 0 and fg_blend.size > 0:
+                                harmonized = ImageUtils.match_color_stats(fg_crop, target_ref)
+                                fg_blend = cv2.addWeighted(fg_crop, (1.0 - strength), harmonized, strength, 0)
                         except Exception as e: 
                             print(f"Harmony Error: {e}")
                     
