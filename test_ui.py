@@ -75,27 +75,31 @@ class ImageUtils:
     def is_old_photo(img):
         if img is None: return False
         
-        # Turn img to BGR if it's grayscale
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-        # A.Thresholding to find bright cracks
-        _, crack_mask = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY)
-        crack_ratio = np.sum(crack_mask > 0) / (img.shape[0] * img.shape[1])
-
-        # B. Analyze color stats
+        # Convert to HSV to analyze color
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
         h, s, v = cv2.split(hsv)
-        avg_saturation = np.mean(s)
-        avg_hue = np.mean(h)
+        
+        mean_s = np.mean(s)
+        mean_h = np.mean(h)
+        std_v = np.std(v) # Standard Deviation of brightness (Contrast)
 
-        # old photo features:
-        # 1. High crack ratio
-        # 2. Sepia tone: low saturation, hue in yellow-orange range
-        is_cracked = crack_ratio > 0.0005 
-        is_sepia_tone = (avg_saturation < 100) and (10 < avg_hue < 40)
+        # --- REVISED LOGIC ---
+        
+        # 1. Sepia Tone Detection
+        # Hue must be Yellow-Orange (10-35)
+        # Saturation must be moderate (20-90) - not too gray, not too vivid
+        is_sepia = (10 <= mean_h <= 35) and (20 <= mean_s <= 90)
 
-        return is_cracked or is_sepia_tone
+        # 2. Old Black & White Detection
+        # Saturation must be very low (< 15)
+        # AND Contrast must be low (std_v < 60) - old photos are often faded
+        is_faded_bw = (mean_s < 15) and (std_v < 60)
 
+        # Only return True if it matches these specific "Old Photo" styles
+        # We REMOVED the "crack_ratio" check because simple white pixels 
+        # (like sky or lights) were triggering false positives.
+        return is_sepia or is_faded_bw
+    
     @staticmethod
     def repair_old_photo(img):
         if img is None: return None
