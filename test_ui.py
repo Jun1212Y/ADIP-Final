@@ -679,7 +679,7 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            print(">>> 執行局部區域 (N鍵) 更新...")
+            print(">>> Running GrabCut Update (N)...")
             r = self.last_roi
             h_img, w_img = self.fg_img_orig.shape[:2]
 
@@ -689,9 +689,11 @@ class MainWindow(QMainWindow):
             x2 = min(w_img, int(r.x() + r.width()))
             y2 = min(h_img, int(r.y() + r.height()))
 
+            if x2 <= x1 or y2 <= y1: return
+
             # 1. Capture ROI 圖片和 Mask
             img_roi = self.fg_img_orig[y1:y2, x1:x2]
-            mask_roi = self.mask[y1:y2, x1:x2]
+            mask_roi = self.mask[y1:y2, x1:x2].copy()
 
             # 2. Implement GrabCut on ROI
             cv2.grabCut(img_roi, mask_roi, None, 
@@ -699,6 +701,10 @@ class MainWindow(QMainWindow):
             
             # 4. Update the main mask with modified ROI
             self.mask[y1:y2, x1:x2] = mask_roi
+
+            self.update_cutout_from_mask() 
+            print(">>> GrabCut Refined.")
+            
         except Exception as e:
             print(f"N-Key Update Error: {e}")
 
@@ -1038,6 +1044,9 @@ class MainWindow(QMainWindow):
         self.process_composition()
 
     def perform_grabcut(self, qrect):
+
+        self.last_roi = qrect
+
         # 1. Get Image Dimensions
         h_img, w_img = self.fg_img_orig.shape[:2]
 
