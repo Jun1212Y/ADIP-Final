@@ -135,6 +135,16 @@ class CanvasWidget(QWidget):
         self.drag_start = None
         self.current_rect = None # For drawing box visuals
 
+        self.last_mouse_pos = None
+        self.setMouseTracking(True) 
+        self.drag_start = None
+        self.current_rect = None 
+        self.zoom_factor = 1.0  
+        self.setMouseTracking(True)
+        self.pan_offset = QPoint(0, 0)
+        self.is_panning = False
+        self.last_mouse_pan_pos = QPoint(0, 0)
+
     def update_display(self, cv_img):
         if cv_img is None: return
         h, w, ch = cv_img.shape
@@ -144,29 +154,58 @@ class CanvasWidget(QWidget):
         self.update()
 
     def get_img_coords(self, widget_pos):
-        if self.img_scale == 0: return 0, 0
-        img_x = int((widget_pos.x() - self.img_offset_x) / self.img_scale)
-        img_y = int((widget_pos.y() - self.img_offset_y) / self.img_scale)
-        return img_x, img_y
+        if not self.display_pixmap or self.img_scale == 0:
+            return 0, 0
+            
+        # Convert widget coordinates to image coordinates
+        ix = int((widget_pos.x() - self.img_offset_x) / self.img_scale)
+        iy = int((widget_pos.y() - self.img_offset_y) / self.img_scale)
+        
+        # Clamp to image bounds
+        ix = max(0, min(ix, self.display_pixmap.width() - 1))
+        iy = max(0, min(iy, self.display_pixmap.height() - 1))
+        return ix, iy
     
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(40, 40, 40)) 
+        painter.fillRect(self.rect(), QColor(40, 40, 40))
 
         if self.display_pixmap:
-            # 1. Scale Image
-            scaled_pixmap = self.display_pixmap.scaled(
+            # --- 1. Draw Image with Zoom & Pan ---
+            # calculate scaled pixmap based on zoom factor ---
+            base_pixmap = self.display_pixmap.scaled(
                 self.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
             )
-            self.img_offset_x = (self.width() - scaled_pixmap.width()) // 2
-            self.img_offset_y = (self.height() - scaled_pixmap.height()) // 2
+            final_w = int(base_pixmap.width() * self.zoom_factor)
+            final_h = int(base_pixmap.height() * self.zoom_factor)
+            scaled_pixmap = base_pixmap.scaled(final_w, final_h, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+
+            # 2. Calculate offsets for centering + panning
+            self.img_offset_x = (self.width() - scaled_pixmap.width()) // 2 + self.pan_offset.x()
+            self.img_offset_y = (self.height() - scaled_pixmap.height()) // 2 + self.pan_offset.y()
+            
+            # 3. Calculate image scale for coordinate mapping
             self.img_scale = scaled_pixmap.width() / max(1, self.display_pixmap.width())
             
             painter.drawPixmap(self.img_offset_x, self.img_offset_y, scaled_pixmap)
 
+            # --- 2. Draw Brush Preview (FG WINDOW) ---
+            if self.canvas_type == "fg" and self.main.current_mode == "normal" and self.main.rb_sub_brush.isChecked():
+                if self.last_mouse_pos is not None:
+                    display_radius = int(self.main.brush_size * self.img_scale)
+                    pen = QPen(QColor(0, 255, 255, 255), 2, Qt.PenStyle.SolidLine)
+                    painter.setPen(pen)
+                    painter.setBrush(QColor(0, 255, 255, 50)) 
+                    painter.drawEllipse(self.last_mouse_pos, display_radius, display_radius)
+                    
+                    # Crosshair
+                    painter.drawLine(self.last_mouse_pos.x() - 5, self.last_mouse_pos.y(),
+                                    self.last_mouse_pos.x() + 5, self.last_mouse_pos.y())
+                    painter.drawLine(self.last_mouse_pos.x(), self.last_mouse_pos.y() - 5,
+                                    self.last_mouse_pos.x(), self.last_mouse_pos.y() + 5)
+
             # --- DRAW TRANSFORM HANDLES (RIGHT WINDOW) ---
             if self.canvas_type == "bg" and self.main.current_mode == "normal" and self.main.active_geom:
-                # ... (Keep existing handle drawing code) ...
                 cx, cy, w, h = self.main.active_geom
                 sx = int(cx * self.img_scale + self.img_offset_x)
                 sy = int(cy * self.img_scale + self.img_offset_y)
@@ -231,7 +270,6 @@ class CanvasWidget(QWidget):
                 my = self.mapFromGlobal(QCursor.pos()).y()
                 painter.drawEllipse(QPoint(mx, my), self.main.brush_size, self.main.brush_size)
 
-            # --- NEW: Custom Harmony Visuals ---
             if self.canvas_type == "bg":
                 # 1. Draw the box while dragging (Yellow Dash)
                 if self.main.is_picking_harmony and self.current_rect:
@@ -251,6 +289,20 @@ class CanvasWidget(QWidget):
                     painter.drawRect(sx, sy, int(cw*self.img_scale), int(ch*self.img_scale))
                     painter.drawText(sx, sy - 5, "Color Source")
 
+                elif self.main.current_mode == "patch":
+                    for attr, color in [('patch_target', QColor(0,0,255)), ('patch_source', QColor(0,255,0))]:
+                        rect = getattr(self.main, attr)
+                        if rect:
+                            painter.setPen(QPen(color, 2, Qt.PenStyle.DashLine))
+                            painter.drawRect(int(rect.x()*self.img_scale + self.img_offset_x),
+                                            int(rect.y()*self.img_scale + self.img_offset_y),
+                                            int(rect.width()*self.img_scale), int(rect.height()*self.img_scale))
+        else:
+            painter.setPen(QColor(200, 200, 200))
+            label = "FOREGROUND SOURCE" if self.canvas_type == "fg" else "BACKGROUND"
+            painter.drawText(10, 20, label)
+            return
+
         # Keep the global text labels at the end
         painter.setPen(QColor(200, 200, 200))
         label = "FOREGROUND SOURCE" if self.canvas_type == "fg" else "BACKGROUND"
@@ -266,6 +318,15 @@ class CanvasWidget(QWidget):
             self.is_dragging = True
             self.drag_start = (ix, iy)
             self.current_rect = QRect(ix, iy, 0, 0)
+
+            # 1. If in Brush Mode
+            if self.main.rb_sub_brush.isChecked():
+                is_fg = (event.button() == Qt.MouseButton.LeftButton) # 左鍵加，其餘(右鍵)減
+                self.main.paint_grabcut_brush(ix, iy, is_fg)
+            # If 
+            elif self.main.rb_sub_roi.isChecked():
+                if event.button() == Qt.MouseButton.LeftButton:
+                    self.current_rect = QRect(ix, iy, 0, 0)
 
         # --- BG WINDOW ---
         elif self.canvas_type == "bg":
@@ -318,17 +379,51 @@ class CanvasWidget(QWidget):
                     self.main.interaction_mode = 'move'
                     self.main.start_dragging_object(ix, iy)
 
+        # MiddleButton of Mouse to reset photo Zoom factor 
+        if event.button() == Qt.MouseButton.MiddleButton:
+            # 1. Ctrl + Middle Click: Reset View
+            if QApplication.keyboardModifiers() == Qt.KeyboardModifier.ControlModifier:
+                self.zoom_factor = 1.0
+                self.pan_offset = QPoint(0, 0)
+                print(">>> View Reset")
+                self.update()
+                return 
+            
+            # 2. Otherwise: Start Panning
+            self.is_panning = True
+            self.last_mouse_pan_pos = event.pos()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
+
     def mouseMoveEvent(self, event):
+        self.last_mouse_pos = event.pos() # For brush preview
+        self.update() 
+
         if not self.display_pixmap: return
         ix, iy = self.get_img_coords(event.pos())
         mx, my = event.pos().x(), event.pos().y()
 
         # FG Logic
         if self.canvas_type == "fg" and self.is_dragging:
-            sx, sy = self.drag_start
-            self.current_rect = QRect(QPoint(sx, sy), QPoint(ix, iy)).normalized()
-            self.update()
-
+            # CaseA: Standard Mode
+            if self.main.current_mode == "normal":
+                
+                # A-1: ROI selection mode
+                if self.main.rb_sub_roi.isChecked() and (event.buttons() & Qt.MouseButton.LeftButton):
+                    sx, sy = self.drag_start
+                    self.current_rect = QRect(QPoint(sx, sy), QPoint(ix, iy)).normalized()
+                    self.update()
+                
+                # A-2: Brush mode
+                elif self.main.rb_sub_brush.isChecked():
+                    self.current_rect = None  
+                    
+                    if event.buttons() & Qt.MouseButton.LeftButton:
+                        # Left click paint: add foreground
+                        self.main.paint_grabcut_brush(ix, iy, is_fg=True)
+                    elif event.buttons() & Qt.MouseButton.RightButton:
+                        # Right click paint: add background
+                        self.main.paint_grabcut_brush(ix, iy, is_fg=False)
         # BG Logic
         elif self.canvas_type == "bg":
             # HANDLE TRANSFORM INTERACTIONS
@@ -385,6 +480,23 @@ class CanvasWidget(QWidget):
                 sx, sy = self.drag_start
                 self.current_rect = QRect(QPoint(sx, sy), QPoint(ix, iy)).normalized()
                 self.update()
+        #Panning Move
+        self.last_mouse_pos = event.pos()
+        if self.is_panning:
+           # 計算本次移動的差距
+            delta = event.pos() - self.last_mouse_pan_pos
+            self.pan_offset += delta
+            self.last_mouse_pan_pos = event.pos()
+            self.update() # 觸發重繪
+
+        if self.main.is_drawing:
+            # 根據按住的是左鍵還是右鍵決定前/背景
+            is_fg = bool(event.buttons() & Qt.MouseButton.LeftButton)
+            # 持續在 Mask 上塗抹，但不執行耗時運算
+            self.main.paint_grabcut_brush(ix, iy, is_fg=is_fg)
+            self.update()
+
+        return
 
     def mouseReleaseEvent(self, event):
         # Reset Interaction Modes
@@ -394,6 +506,13 @@ class CanvasWidget(QWidget):
         # Reset Dragging Flags
         if self.is_dragging:
             self.is_dragging = False
+
+            if self.canvas_type == "fg" and self.main.current_mode == "normal":
+                # FG ROI Selection Complete
+                if self.main.rb_sub_roi.isChecked() and event.button() == Qt.MouseButton.LeftButton:
+                    if self.current_rect and self.current_rect.width() > 5:
+                        self.main.perform_grabcut(self.current_rect)
+                    self.current_rect = None
 
             if self.canvas_type == "bg" and self.main.is_picking_harmony and self.current_rect:
                 # Save the rect coordinates
@@ -417,8 +536,76 @@ class CanvasWidget(QWidget):
                 self.current_rect = None; self.update()
             elif self.canvas_type == "bg" and self.main.current_mode == "normal":
                 self.main.stop_dragging()
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self.is_panning = False
+            self.setCursor(Qt.CursorShape.CrossCursor) # 恢復十字準星
+            return
 
     def wheelEvent(self, event):
+        # Photo Window Zoom
+        # 1. Check for Ctrl key
+        modifiers = QApplication.keyboardModifiers()
+        
+        # Ctrl + Wheel = Zoom View
+        if modifiers == Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y()
+            
+            # Adjust zoom factor
+            step = 1.1 if delta > 0 else 0.9
+            self.zoom_factor = max(0.2, min(self.zoom_factor * step, 10.0))
+            
+            # Adjust pan offset to zoom towards cursor
+            if 0.95 <= self.zoom_factor <= 1.05:
+                self.zoom_factor = 1.0
+                self.pan_offset = QPoint(0, 0)
+            
+            self.update()
+            event.accept()
+            
+        # 2. Additional Brush Size Adjustments
+        elif self.canvas_type == "fg" and self.main.current_mode == "normal" and self.main.rb_sub_brush.isChecked():
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self.main.brush_size = min(150, self.main.brush_size + 2)
+            else:
+                self.main.brush_size = max(1, self.main.brush_size - 2)
+            self.update()
+            event.accept()
+
+        # 3. Additional Brush Size Adjustments
+        elif self.canvas_type == "fg" and self.main.current_mode == "normal" and self.main.rb_sub_brush.isChecked():
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self.main.brush_size = min(150, self.main.brush_size + 2)
+            else:
+                self.main.brush_size = max(1, self.main.brush_size - 2)
+            self.update()
+            event.accept()
+            
+        #FG Brush mode Zoom
+        if self.canvas_type == "fg" and self.main.current_mode == "normal" and self.main.rb_sub_brush.isChecked():
+            # Get the wheel delta
+            delta = event.angleDelta().y()
+            
+            # Adjust brush size
+            if delta > 0:
+                self.main.brush_size = min(150, self.main.brush_size + 2)
+            else:
+                self.main.brush_size = max(1, self.main.brush_size - 2)
+            
+            # Update the brush size slider in the main window, if it exists
+            if hasattr(self.main, 'sld_brush'):
+                self.main.sld_brush.setValue(self.main.brush_size)
+            
+            # Redraw the canvas to reflect the new brush size
+            self.update()
+            
+            # Consume the event
+            event.accept()
+        else:
+            # Default behavior
+            super().wheelEvent(event)
+
         if self.canvas_type == "bg":
             delta = event.angleDelta().y()
             if self.main.current_mode == "occlusion":
@@ -449,6 +636,9 @@ class MainWindow(QMainWindow):
         self.mask = None
         self.bgdModel = np.zeros((1, 65), np.float64)
         self.fgdModel = np.zeros((1, 65), np.float64)
+        self.is_drawing = False
+        self.last_roi = None
+        self.brush_size = 20 
         self.gc_initialized = False
         self.history = []
         
@@ -476,6 +666,51 @@ class MainWindow(QMainWindow):
 
         self.setup_ui()
         self.load_defaults()
+    
+    def paint_grabcut_brush(self, x, y, is_fg=True):
+        if self.mask is None: return
+    
+    # 1. Make sure to get the correct GrabCut value
+        val = cv2.GC_FGD if is_fg else cv2.GC_BGD
+    
+    # 2. Draw circle on mask
+        ix, iy = int(x), int(y)
+        cv2.circle(self.mask, (ix, iy), self.brush_size, val, -1, lineType=cv2.LINE_8)
+    
+    # 3. Update GrabCut mask display
+    #   For debugging: print actual mask value at center
+        actual_val = self.mask[iy, ix]
+        print(f"Brush applied at ({ix}, {iy}), Target: {val}, Actual in mask: {actual_val}")
+        self.update_cutout_from_mask()
+    
+    def run_grabcut_iteration(self):
+        if not hasattr(self, 'last_roi') or self.last_roi is None or self.mask is None:
+            print(">>> 請先框選 ROI 區域")
+            return
+
+        try:
+            print(">>> 執行局部區域 (N鍵) 更新...")
+            r = self.last_roi
+            h_img, w_img = self.fg_img_orig.shape[:2]
+
+            # calc coordinates
+            x1 = max(0, int(r.x()))
+            y1 = max(0, int(r.y()))
+            x2 = min(w_img, int(r.x() + r.width()))
+            y2 = min(h_img, int(r.y() + r.height()))
+
+            # 1. Capture ROI 圖片和 Mask
+            img_roi = self.fg_img_orig[y1:y2, x1:x2]
+            mask_roi = self.mask[y1:y2, x1:x2]
+
+            # 2. Implement GrabCut on ROI
+            cv2.grabCut(img_roi, mask_roi, None, 
+                        self.bgdModel, self.fgdModel, 5, cv2.GC_INIT_WITH_MASK)
+            
+            # 4. Update the main mask with modified ROI
+            self.mask[y1:y2, x1:x2] = mask_roi
+        except Exception as e:
+            print(f"N-Key Update Error: {e}")
 
     def save_state(self):
         """Captures a snapshot of the entire current state."""
@@ -539,88 +774,99 @@ class MainWindow(QMainWindow):
         g1.setLayout(l1)
         sb_layout.addWidget(g1)
 
-        # 2. Modes & Tools Container
-        g_modes = QGroupBox("2. Modes & Actions")
-        l_modes = QVBoxLayout()
+        # 2. Modes
+        g2 = QGroupBox("2. Modes")
+        l2 = QVBoxLayout() 
         self.btn_grp = QButtonGroup()
 
-        # A. STANDARD INTERACTION SECTION
-        self.rb_normal = QRadioButton("Standard Interaction (Space)")
+        # --- Standard Interaction 區域 ---
+        standard_container = QWidget()
+        standard_vbox = QVBoxLayout(standard_container)
+        standard_vbox.setContentsMargins(0, 0, 0, 0)
+        standard_vbox.setSpacing(5)
+
+        self.rb_normal = QRadioButton("Standard Interaction")
         self.rb_normal.setChecked(True)
         self.rb_normal.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-
         self.btn_grp.addButton(self.rb_normal)
-        l_modes.addWidget(self.rb_normal)
-
-        # -- Child Buttons for Standard (Indented) --
-        self.container_normal = QWidget()
-        lay_normal = QVBoxLayout(self.container_normal)
-        lay_normal.setContentsMargins(20, 0, 0, 10) # Indent left by 20px
-
-        self.btn_lock = QPushButton("Lock Selection (SPACE)")
-        self.btn_lock.clicked.connect(self.lock_selection)
-        self.btn_lock.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.rb_normal.toggled.connect(lambda: self.set_mode("normal"))
         
-        self.btn_undo = QPushButton("Undo (Z)")
-        self.btn_undo.clicked.connect(self.undo_cut)
-        self.btn_undo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        # 把按鈕加進容器
+        standard_vbox.addWidget(self.rb_normal)
 
-        lay_normal.addWidget(self.btn_lock)
-        lay_normal.addWidget(self.btn_undo)
-        l_modes.addWidget(self.container_normal) # Add container to main layout
+        # 子項目面板
+        self.sub_mode_panel = QWidget()
+        sub_layout = QVBoxLayout(self.sub_mode_panel)
+        sub_layout.setContentsMargins(20, 0, 0, 10)
+        
+        self.rb_sub_roi = QRadioButton("ROI Box (Rectangle)")
+        self.rb_sub_roi.setChecked(True)
+        self.rb_sub_brush = QRadioButton("Refine Brush (L:+, R:-)")
+        
+        self.sub_btn_grp = QButtonGroup(self)
+        self.sub_btn_grp.addButton(self.rb_sub_roi)
+        self.sub_btn_grp.addButton(self.rb_sub_brush)
+        
+        sub_layout.addWidget(self.rb_sub_roi)
+        sub_layout.addWidget(self.rb_sub_brush)
+        
+        # 把子面板加進容器
+        standard_vbox.addWidget(self.sub_mode_panel)
 
-        # B. PATCH TOOL SECTION
-        self.rb_patch = QRadioButton("Patch Tool (R)")
+        # 把「整個組合容器」加進主佈局 l2
+        l2.addWidget(standard_container)
+
+        # --- 其他模式 (只加一次) ---
+        self.rb_patch = QRadioButton("Patch Tool(r)")
+        self.rb_occ = QRadioButton("Occlusion Paint(o)")
+        
         self.rb_patch.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-
-        self.btn_grp.addButton(self.rb_patch)
-        l_modes.addWidget(self.rb_patch)
-
-        # -- Child Buttons for Patch (Indented) --
-        self.container_patch = QWidget()
-        lay_patch = QVBoxLayout(self.container_patch)
-        lay_patch.setContentsMargins(20, 0, 0, 10) # Indent left by 20px
-
-        self.lbl_patch = QLabel("Step: Draw Target Box")
-        self.btn_apply_patch = QPushButton("Apply Patch (Enter)")
-        self.btn_apply_patch.clicked.connect(self.apply_patch)
-
-        self.btn_undo_patch = QPushButton("Undo (Z)")
-        self.btn_undo_patch.clicked.connect(self.undo_cut)
-        self.btn_undo_patch.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-
-        lay_patch.addWidget(self.lbl_patch)
-        lay_patch.addWidget(self.btn_apply_patch)
-        lay_patch.addWidget(self.btn_undo_patch)
-        l_modes.addWidget(self.container_patch)
-        self.container_patch.setVisible(False)
-
-        # C. OCCLUSION SECTION
-        self.rb_occ = QRadioButton("Occlusion Paint (O)")
         self.rb_occ.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
+        self.btn_grp.addButton(self.rb_patch)
         self.btn_grp.addButton(self.rb_occ)
-        l_modes.addWidget(self.rb_occ)
-
-        self.container_occ = QWidget()
-        lay_occ = QVBoxLayout(self.container_occ)
-        lay_occ.setContentsMargins(20, 0, 0, 10)
         
-        self.btn_undo_occ = QPushButton("Undo (Z)")
-        self.btn_undo_occ.clicked.connect(self.undo_cut)
-        self.btn_undo_occ.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        
-        lay_occ.addWidget(self.btn_undo_occ)
-        l_modes.addWidget(self.container_occ)
-        self.container_occ.setVisible(False)
-
-        # Connect Toggles
-        self.rb_normal.toggled.connect(lambda: self.set_mode("normal"))
         self.rb_patch.toggled.connect(lambda: self.set_mode("patch"))
         self.rb_occ.toggled.connect(lambda: self.set_mode("occlusion"))
+        
+        # 這裡只加入 Patch 和 Occ，不要再加一次 rb_normal 了！
+        l2.addWidget(self.rb_patch)
+        l2.addWidget(self.rb_occ)
 
-        g_modes.setLayout(l_modes)
-        sb_layout.addWidget(g_modes)
+        # 最後建議在 l2 加入一個伸縮空間，防止元件被撐開
+        l2.addStretch()
+
+        g2.setLayout(l2)
+        sb_layout.addWidget(g2)
+
+        # 3. Cut Controls
+        g3 = QGroupBox("3. Cut Actions")
+        l3 = QVBoxLayout()
+
+        btn_lock = QPushButton("Lock / Freeze Selection (SPACE)")
+        btn_lock.clicked.connect(self.lock_selection)
+        btn_lock.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        btn_undo = QPushButton("Undo Last Cut (Z)")
+        btn_undo.clicked.connect(self.undo_cut)
+        btn_undo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        l3.addWidget(btn_lock); l3.addWidget(btn_undo)
+        g3.setLayout(l3)
+        sb_layout.addWidget(g3)
+
+        # 4. Patch Controls
+        g4 = QGroupBox("4. Patch Actions")
+        l4 = QVBoxLayout()
+
+        self.lbl_patch = QLabel("Step: Draw Target Box")
+        btn_apply_patch = QPushButton("Apply Patch (Enter)")
+        btn_apply_patch.clicked.connect(self.apply_patch)
+        btn_apply_patch.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        l4.addWidget(self.lbl_patch); l4.addWidget(btn_apply_patch)
+        g4.setLayout(l4)
+        sb_layout.addWidget(g4)
 
         # 5. Transform & FX
         g5 = QGroupBox("3. Adjustments")
@@ -874,6 +1120,47 @@ class MainWindow(QMainWindow):
                 print(f"GrabCut Refine Error: {e}")
 
         self.update_cutout_from_mask()
+    
+    def execute_brush_grabcut(self):
+        if self.mask is None or self.fg_img_orig is None: return
+        try:
+            # --- A. expand painted areas using Flood Fill ---
+            h, w = self.fg_img_orig.shape[:2]
+            # flood_mask needs to be 2 pixels larger than the image
+            flood_mask = np.zeros((h + 2, w + 2), np.uint8)
+            
+            # Find all definite foreground pixels as seed points
+            seeds = np.column_stack(np.where(self.mask == cv2.GC_FGD))
+            
+            if len(seeds) > 0:
+                # To avoid too many flood fills, sample seeds evenly
+                step = max(1, len(seeds) // 15)
+                for i in range(0, len(seeds), step):
+                    y, x = seeds[i]
+                    # loDiff/upDiff can be adjusted for sensitivity
+                    cv2.floodFill(self.fg_img_orig, flood_mask, (x, y), 255, 
+                                  loDiff=(20, 20, 20), upDiff=(20, 20, 20), 
+                                  flags=4 | cv2.FLOODFILL_MASK_ONLY)
+
+            # --- B. Process flood-filled mask ---
+            # Convert flood_mask to binary: 255 where filled, 0 elsewhere
+            refined_area = flood_mask[1:-1, 1:-1]
+            self.mask[refined_area == 255] = cv2.GC_PR_FGD
+            
+            # --- C. Re-run GrabCut with updated mask ---
+            # Reset models
+            self.main.bgdModel = np.zeros((1, 65), np.float64)
+            self.main.fgdModel = np.zeros((1, 65), np.float64)
+
+            # --- D. Run GrabCut
+            cv2.grabCut(self.fg_img_orig, self.mask, None, 
+                        self.main.bgdModel, self.main.fgdModel, 5, cv2.GC_INIT_WITH_MASK)
+            
+            self.update_cutout_from_mask()
+            print(">>> 拖曳結束：全區域擴張並重新計算完成")
+            
+        except Exception as e:
+            print(f"Hybrid Error: {e}")
 
     def lock_selection(self):
         """Converts PR_FGD (3) to FGD (1) so they don't get removed easily."""
@@ -1321,6 +1608,12 @@ class MainWindow(QMainWindow):
         # Optional: 'Z' for Undo (already defined in button, but good to map here too)
         elif event.key() == Qt.Key.Key_Z:          
             self.undo_cut()
+        
+        if event.key() == Qt.Key.Key_N:
+            if self.mask is not None:
+                self.run_grabcut_iteration()
+            else:
+                print(">>> Fixed the mask after Select ROI")
 
         # Pass other events (like standard system shortcuts) up the chain
         else:
