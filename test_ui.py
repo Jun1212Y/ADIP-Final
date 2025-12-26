@@ -190,7 +190,7 @@ class CanvasWidget(QWidget):
             painter.drawPixmap(self.img_offset_x, self.img_offset_y, scaled_pixmap)
 
             # --- 2. Draw Brush Preview (FG WINDOW) ---
-            if self.canvas_type == "fg" and self.main.current_mode == "normal" and self.main.rb_sub_brush.isChecked():
+            if self.canvas_type == "fg" and self.main.current_mode == "normal" and self.main.chk_brush.isChecked():
                 if self.last_mouse_pos is not None:
                     display_radius = int(self.main.brush_size * self.img_scale)
                     pen = QPen(QColor(0, 255, 255, 255), 2, Qt.PenStyle.SolidLine)
@@ -319,12 +319,13 @@ class CanvasWidget(QWidget):
             self.drag_start = (ix, iy)
             self.current_rect = QRect(ix, iy, 0, 0)
 
-            # 1. If in Brush Mode
-            if self.main.rb_sub_brush.isChecked():
-                is_fg = (event.button() == Qt.MouseButton.LeftButton) # 左鍵加，其餘(右鍵)減
+            # 1. If in Brush Mode (Checked)
+            if self.main.chk_brush.isChecked():
+                is_fg = (event.button() == Qt.MouseButton.LeftButton)
                 self.main.paint_grabcut_brush(ix, iy, is_fg)
-            # If 
-            elif self.main.rb_sub_roi.isChecked():
+
+            # 2. If in ROI Mode (Unchecked)
+            else: 
                 if event.button() == Qt.MouseButton.LeftButton:
                     self.current_rect = QRect(ix, iy, 0, 0)
 
@@ -408,22 +409,20 @@ class CanvasWidget(QWidget):
             # CaseA: Standard Mode
             if self.main.current_mode == "normal":
                 
-                # A-1: ROI selection mode
-                if self.main.rb_sub_roi.isChecked() and (event.buttons() & Qt.MouseButton.LeftButton):
+                # A-1: ROI selection mode (Brush is Unchecked)
+                if not self.main.chk_brush.isChecked() and (event.buttons() & Qt.MouseButton.LeftButton):
                     sx, sy = self.drag_start
                     self.current_rect = QRect(QPoint(sx, sy), QPoint(ix, iy)).normalized()
                     self.update()
-                
-                # A-2: Brush mode
-                elif self.main.rb_sub_brush.isChecked():
+
+                # A-2: Brush mode (Brush is Checked)
+                elif self.main.chk_brush.isChecked():
                     self.current_rect = None  
-                    
                     if event.buttons() & Qt.MouseButton.LeftButton:
-                        # Left click paint: add foreground
                         self.main.paint_grabcut_brush(ix, iy, is_fg=True)
                     elif event.buttons() & Qt.MouseButton.RightButton:
-                        # Right click paint: add background
                         self.main.paint_grabcut_brush(ix, iy, is_fg=False)
+
         # BG Logic
         elif self.canvas_type == "bg":
             # HANDLE TRANSFORM INTERACTIONS
@@ -509,7 +508,7 @@ class CanvasWidget(QWidget):
 
             if self.canvas_type == "fg" and self.main.current_mode == "normal":
                 # FG ROI Selection Complete
-                if self.main.rb_sub_roi.isChecked() and event.button() == Qt.MouseButton.LeftButton:
+                if not self.main.chk_brush.isChecked() and event.button() == Qt.MouseButton.LeftButton:
                     if self.current_rect and self.current_rect.width() > 5:
                         self.main.perform_grabcut(self.current_rect)
                     self.current_rect = None
@@ -563,7 +562,7 @@ class CanvasWidget(QWidget):
             event.accept()
             
         # 2. Additional Brush Size Adjustments
-        elif self.canvas_type == "fg" and self.main.current_mode == "normal" and self.main.rb_sub_brush.isChecked():
+        elif self.canvas_type == "fg" and self.main.current_mode == "normal" and self.main.chk_brush.isChecked():
             delta = event.angleDelta().y()
             if delta > 0:
                 self.main.brush_size = min(150, self.main.brush_size + 2)
@@ -573,7 +572,7 @@ class CanvasWidget(QWidget):
             event.accept()
 
         # 3. Additional Brush Size Adjustments
-        elif self.canvas_type == "fg" and self.main.current_mode == "normal" and self.main.rb_sub_brush.isChecked():
+        elif self.canvas_type == "fg" and self.main.current_mode == "normal" and self.main.chk_brush.isChecked():
             delta = event.angleDelta().y()
             if delta > 0:
                 self.main.brush_size = min(150, self.main.brush_size + 2)
@@ -583,7 +582,7 @@ class CanvasWidget(QWidget):
             event.accept()
             
         #FG Brush mode Zoom
-        if self.canvas_type == "fg" and self.main.current_mode == "normal" and self.main.rb_sub_brush.isChecked():
+        if self.canvas_type == "fg" and self.main.current_mode == "normal" and self.main.chk_brush.isChecked():
             # Get the wheel delta
             delta = event.angleDelta().y()
             
@@ -758,10 +757,11 @@ class MainWindow(QMainWindow):
         sb_widget = QWidget()
         sb_layout = QVBoxLayout(sb_widget)
         sb_widget.setStyleSheet("QGroupBox { font-weight: bold; border: 1px solid gray; margin-top: 10px; }")
-        
-        # 1. Loaders
+
+        # --- 1. LOADERS ---
         g1 = QGroupBox("1. Images")
         l1 = QVBoxLayout()
+
         btn_fg = QPushButton("Load Person (FG)")
         btn_fg.clicked.connect(self.load_fg)
         btn_fg.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -774,149 +774,135 @@ class MainWindow(QMainWindow):
         g1.setLayout(l1)
         sb_layout.addWidget(g1)
 
-        # 2. Modes
+        # --- 2. MODES & TOOLS ---
         g2 = QGroupBox("2. Modes")
         l2 = QVBoxLayout() 
         self.btn_grp = QButtonGroup()
 
-        # --- Standard Interaction 區域 ---
-        standard_container = QWidget()
-        standard_vbox = QVBoxLayout(standard_container)
-        standard_vbox.setContentsMargins(0, 0, 0, 0)
-        standard_vbox.setSpacing(5)
-
+        # ===============================================
+        # MODE A: Standard Interaction
+        # ===============================================
         self.rb_normal = QRadioButton("Standard Interaction")
         self.rb_normal.setChecked(True)
-        self.rb_normal.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.btn_grp.addButton(self.rb_normal)
         self.rb_normal.toggled.connect(lambda: self.set_mode("normal"))
-        
-        # 把按鈕加進容器
-        standard_vbox.addWidget(self.rb_normal)
+        self.rb_normal.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        l2.addWidget(self.rb_normal)
 
-        # 子項目面板
-        self.sub_mode_panel = QWidget()
-        sub_layout = QVBoxLayout(self.sub_mode_panel)
-        sub_layout.setContentsMargins(20, 0, 0, 10)
-        
-        self.rb_sub_roi = QRadioButton("ROI Box (Rectangle)")
-        self.rb_sub_roi.setChecked(True)
-        self.rb_sub_brush = QRadioButton("Refine Brush (L:+, R:-)")
-        
-        self.sub_btn_grp = QButtonGroup(self)
-        self.sub_btn_grp.addButton(self.rb_sub_roi)
-        self.sub_btn_grp.addButton(self.rb_sub_brush)
-        
-        sub_layout.addWidget(self.rb_sub_roi)
-        sub_layout.addWidget(self.rb_sub_brush)
-        
-        # 把子面板加進容器
-        standard_vbox.addWidget(self.sub_mode_panel)
+        # Container for Standard Controls (Nested immediately under the Radio Button)
+        self.container_normal = QWidget()
+        lay_normal = QVBoxLayout(self.container_normal)
+        lay_normal.setContentsMargins(20, 0, 0, 10) # Indent left by 20px
 
-        # 把「整個組合容器」加進主佈局 l2
-        l2.addWidget(standard_container)
+        # 2. Refine Brush Checkbox
+        self.chk_brush = QRadioButton("Use Refine Brush")
+        self.chk_brush.toggled.connect(lambda: self.canvas_fg.update()) 
+        self.chk_brush.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        lay_normal.addWidget(self.chk_brush)
 
-        # --- 其他模式 (只加一次) ---
-        self.rb_patch = QRadioButton("Patch Tool(r)")
-        self.rb_occ = QRadioButton("Occlusion Paint(o)")
-        
-        self.rb_patch.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.rb_occ.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        # 3. Lock Button
+        btn_lock = QPushButton("Lock / Freeze Selection (SPACE)")
+        btn_lock.clicked.connect(self.lock_selection)
+        btn_lock.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        lay_normal.addWidget(btn_lock)
 
-        self.btn_grp.addButton(self.rb_patch)
-        self.btn_grp.addButton(self.rb_occ)
+        btn_undo_std = QPushButton("Undo Last Cut (Z)")
+        btn_undo_std.clicked.connect(self.undo_cut)
+        btn_undo_std.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        lay_normal.addWidget(btn_undo_std)
         
+        l2.addWidget(self.container_normal)
+
+        # ===============================================
+        # MODE B: Patch Tool
+        # ===============================================
+        self.rb_patch = QRadioButton("Patch Tool (R)")
         self.rb_patch.toggled.connect(lambda: self.set_mode("patch"))
-        self.rb_occ.toggled.connect(lambda: self.set_mode("occlusion"))
-        
-        # 這裡只加入 Patch 和 Occ，不要再加一次 rb_normal 了！
+        self.rb_patch.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         l2.addWidget(self.rb_patch)
+
+        # Container for Patch Controls
+        self.container_patch = QWidget()
+        lay_patch = QVBoxLayout(self.container_patch)
+        lay_patch.setContentsMargins(20, 0, 0, 10) # Indent left
+
+        self.lbl_patch = QLabel("Step: Draw Target Box")
+        lay_patch.addWidget(self.lbl_patch)
+
+        btn_apply_patch = QPushButton("Apply Patch (Enter)")
+        btn_apply_patch.clicked.connect(self.apply_patch)
+        btn_apply_patch.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        lay_patch.addWidget(btn_apply_patch)
+
+        btn_undo_patch = QPushButton("Undo Patch Action (Z)")
+        btn_undo_patch.clicked.connect(self.undo_cut)   
+        btn_undo_patch.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        lay_patch.addWidget(btn_undo_patch)
+        
+        self.container_patch.setVisible(False)
+        l2.addWidget(self.container_patch)
+
+        # ===============================================
+        # MODE C: Occlusion Paint
+        # ===============================================
+        self.rb_occ = QRadioButton("Occlusion Paint (O)")
+        self.rb_occ.toggled.connect(lambda: self.set_mode("occlusion"))
+        self.rb_occ.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         l2.addWidget(self.rb_occ)
 
-        # 最後建議在 l2 加入一個伸縮空間，防止元件被撐開
-        l2.addStretch()
+        # Container for Occlusion Controls
+        self.container_occ = QWidget()
+        lay_occ = QVBoxLayout(self.container_occ)
+        lay_occ.setContentsMargins(20, 0, 0, 10)
+
+        # 1. UNDO (Occlusion)
+        btn_undo_occ = QPushButton("Undo Paint Action (Z)")
+        btn_undo_occ.clicked.connect(self.undo_cut)
+        btn_undo_occ.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        lay_occ.addWidget(btn_undo_occ)
+        
+        self.container_occ.setVisible(False)
+        l2.addWidget(self.container_occ)
 
         g2.setLayout(l2)
         sb_layout.addWidget(g2)
 
-        # 3. Cut Controls
-        g3 = QGroupBox("3. Cut Actions")
-        l3 = QVBoxLayout()
-
-        btn_lock = QPushButton("Lock / Freeze Selection (SPACE)")
-        btn_lock.clicked.connect(self.lock_selection)
-        btn_lock.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-
-        btn_undo = QPushButton("Undo Last Cut (Z)")
-        btn_undo.clicked.connect(self.undo_cut)
-        btn_undo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-
-        l3.addWidget(btn_lock); l3.addWidget(btn_undo)
-        g3.setLayout(l3)
-        sb_layout.addWidget(g3)
-
-        # 4. Patch Controls
-        g4 = QGroupBox("4. Patch Actions")
-        l4 = QVBoxLayout()
-
-        self.lbl_patch = QLabel("Step: Draw Target Box")
-        btn_apply_patch = QPushButton("Apply Patch (Enter)")
-        btn_apply_patch.clicked.connect(self.apply_patch)
-        btn_apply_patch.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-
-        l4.addWidget(self.lbl_patch); l4.addWidget(btn_apply_patch)
-        g4.setLayout(l4)
-        sb_layout.addWidget(g4)
-
-        # 5. Transform & FX
+        # --- 3. ADJUSTMENTS (Same as before) ---
         g5 = QGroupBox("3. Adjustments")
         l5 = QVBoxLayout()
-
-        # Scale
         self.chk_flip = QCheckBox("Flip Horizontal"); self.chk_flip.toggled.connect(self.update_comp_params)
+        self.chk_flip.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         l5.addWidget(self.chk_flip)
-
-        # --- PARENT: Color Harmonization ---
+        
+        # (Copy pasting the rest of your existing g5 code)
         self.chk_harmony = QCheckBox("Color Harmonization")
         self.chk_harmony.setChecked(True)
         self.chk_harmony.toggled.connect(self.update_comp_params)
+        self.chk_harmony.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         l5.addWidget(self.chk_harmony)
 
-        # --- CHILD: Custom Harmony Source (Indented) ---
         self.chk_custom_harmony = QCheckBox("Custom Harmony Source")
-        
-        # 1. VISUAL: Move it to the right by 20 pixels
-        self.chk_custom_harmony.setStyleSheet("margin-left: 20px;") 
-        
+        self.chk_custom_harmony.setStyleSheet("margin-left: 20px;")
         self.chk_custom_harmony.toggled.connect(self.toggle_custom_harmony)
         self.chk_custom_harmony.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         l5.addWidget(self.chk_custom_harmony)
 
-        # --- CHILD BUTTON: Apply Button (Indented) ---
         btn_apply_harmony = QPushButton("Apply Color Source")
-        
-        # 2. VISUAL: Move button right too so it matches
-        btn_apply_harmony.setStyleSheet("margin-left: 20px;") 
-        
+        btn_apply_harmony.setStyleSheet("margin-left: 20px;")
         btn_apply_harmony.clicked.connect(self.confirm_and_hide_selection)
         btn_apply_harmony.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         l5.addWidget(btn_apply_harmony)
-
-        # --- LOGIC: Disable Child if Parent is OFF ---
-        # If user unchecks "Color Harmonization", the Custom options become greyed out
+        
         self.chk_harmony.toggled.connect(self.chk_custom_harmony.setEnabled)
         self.chk_harmony.toggled.connect(btn_apply_harmony.setEnabled)
 
-        # Harmony Strength (Back to normal alignment)
         l5.addWidget(QLabel("Harmonization Strength:"))
-        self.sld_harmony_strength = QSlider(Qt.Orientation.Horizontal)
-        self.sld_harmony_strength.setRange(0, 100)
-        self.sld_harmony_strength.setValue(60)
+        self.sld_harmony_strength = QSlider(Qt.Orientation.Horizontal); self.sld_harmony_strength.setRange(0, 100); self.sld_harmony_strength.setValue(60)
         self.sld_harmony_strength.valueChanged.connect(self.update_comp_params)
         l5.addWidget(self.sld_harmony_strength)
 
         self.chk_relight = QCheckBox("Global Relighting"); self.chk_relight.setChecked(True)
         self.chk_relight.toggled.connect(self.update_comp_params)
+        self.chk_relight.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         l5.addWidget(self.chk_relight)
 
         l5.addWidget(QLabel("Light Angle:"))
@@ -924,17 +910,15 @@ class MainWindow(QMainWindow):
         self.sld_angle.valueChanged.connect(self.update_comp_params)
         l5.addWidget(self.sld_angle)
 
-        l5.addWidget(QLabel("Occlusion Brush Size:"))
-        self.sld_brush = QSlider(Qt.Orientation.Horizontal)
-        self.sld_brush.setRange(5, 100)
-        self.sld_brush.setValue(25)
-        # Connect to a new small function to update brush immediately
+        l5.addWidget(QLabel("Brush Size:"))
+        self.sld_brush = QSlider(Qt.Orientation.Horizontal); self.sld_brush.setRange(5, 100); self.sld_brush.setValue(25)
         self.sld_brush.valueChanged.connect(self.update_brush_from_slider)
         l5.addWidget(self.sld_brush)
-        
+
         g5.setLayout(l5)
         sb_layout.addWidget(g5)
 
+        # SAVE/EXIT
         btn_save = QPushButton("SAVE RESULT")
         btn_save.setStyleSheet("background-color: green; color: white; padding: 10px;")
         btn_save.clicked.connect(self.save_result)
@@ -942,10 +926,9 @@ class MainWindow(QMainWindow):
         sb_layout.addWidget(btn_save)
 
         btn_exit = QPushButton("EXIT")
-        # Styling it Red to indicate "Quit"
-        btn_exit.setStyleSheet("background-color: #D32F2F; color: white; padding: 10px; font-weight: bold; margin-top: 5px;")
-        # Connect to self.close() which acts like clicking the 'X' on the window
-        btn_exit.clicked.connect(self.close) 
+        btn_exit.setStyleSheet("background-color: #D32F2F; color: white; padding: 10px; font-weight: bold;")
+        btn_exit.clicked.connect(self.close)
+        btn_exit.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         sb_layout.addWidget(btn_exit)
 
         sb_layout.addStretch()
