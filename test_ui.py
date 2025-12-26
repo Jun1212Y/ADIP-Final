@@ -588,6 +588,7 @@ class MainWindow(QMainWindow):
         self.bgdModel = np.zeros((1, 65), np.float64)
         self.fgdModel = np.zeros((1, 65), np.float64)
         self.is_drawing = False
+        self.last_fg_mask = None
         self.last_roi = None
         self.brush_size = 20 
         self.gc_initialized = False
@@ -1072,6 +1073,10 @@ class MainWindow(QMainWindow):
         vis_img[self.mask == cv2.GC_PR_FGD] = [255, 0, 255]
         self.canvas_fg.update_display(vis_img)
 
+        #Fg_Mask
+        mask_binary = np.where((self.mask == 1) | (self.mask == 3), 255, 0).astype('uint8')
+        self.last_fg_mask = mask_binary
+        
         # Create Cutout for Right Canvas
         mask2 = np.where((self.mask == 2) | (self.mask == 0), 0, 1).astype('uint8')
         ys, xs = np.where(mask2 == 1)
@@ -1409,13 +1414,13 @@ class MainWindow(QMainWindow):
                 print(f"Saved Composite: {path}")
 
                 # 4. Save the Mask Image
-                if hasattr(self, 'current_mask_result') and self.current_mask_result is not None:
+                if hasattr(self, 'last_fg_mask') and self.last_fg_mask is not None:
                     # Create mask filename (e.g. "photo.jpg" -> "photo_mask.png")
                     # We use PNG for masks because it is lossless (no blurry edges)
                     root, ext = os.path.splitext(path)
-                    mask_path = f"{root}_mask.png"
+                    mask_path = f"{root}_fg_mask.png"
                     
-                    cv2.imwrite(mask_path, self.current_mask_result)
+                    cv2.imwrite(mask_path, self.last_fg_mask)
                     print(f"Saved Mask: {mask_path}")
 
                 # 5. Restore original mode
