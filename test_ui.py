@@ -3,6 +3,7 @@ import os
 import cv2
 import numpy as np
 import math
+import time
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QLabel, QSlider, QCheckBox, 
                              QFileDialog, QGroupBox, QScrollArea, QRadioButton, QButtonGroup, QMessageBox)
@@ -94,7 +95,10 @@ class ImageUtils:
         
         # Repair Steps:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        # Detect bright cracks/scratches
         _, crack_mask = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY)
+
         kernel = np.ones((3, 3), np.uint8)
         crack_mask = cv2.dilate(crack_mask, kernel, iterations=1)
         img_fixed = cv2.inpaint(img, crack_mask, 3, cv2.INPAINT_TELEA)
@@ -1044,7 +1048,6 @@ class MainWindow(QMainWindow):
         self.process_composition()
 
     def perform_grabcut(self, qrect):
-
         self.last_roi = qrect
 
         # 1. Get Image Dimensions
@@ -1068,7 +1071,6 @@ class MainWindow(QMainWindow):
         if not self.gc_initialized:
             self.mask = np.zeros((h_img, w_img), np.uint8)
             
-            # --- FIX: SAFEGUARD FOR FULL IMAGE SELECTION ---
             # If rect touches the image border, shrink it by 1px.
             # This ensures GrabCut always has at least 1px of "Sure Background" to learn from.
             gx, gy, gw, gh = x_start, y_start, w, h
@@ -1082,7 +1084,10 @@ class MainWindow(QMainWindow):
             if gw > 0 and gh > 0:
                 rect = (gx, gy, gw, gh)
                 try:
+                    start_time = time.time()  # Start timing
                     cv2.grabCut(self.fg_img_orig, self.mask, rect, self.bgdModel, self.fgdModel, 5, cv2.GC_INIT_WITH_RECT)
+                    end_time = time.time()  # End timing
+                    print(f"GrabCut Initialization Execution Time: {end_time - start_time:.4f} seconds")
                     self.gc_initialized = True
                 except cv2.error as e:
                     print(f"GrabCut Init Error: {e}")
@@ -1098,7 +1103,10 @@ class MainWindow(QMainWindow):
             )
 
             try:
+                start_time = time.time()  # Start timing
                 cv2.grabCut(self.fg_img_orig, self.mask, None, self.bgdModel, self.fgdModel, 5, cv2.GC_INIT_WITH_MASK)
+                end_time = time.time()  # End timing
+                print(f"GrabCut Refinement Execution Time: {end_time - start_time:.4f} seconds")
             except cv2.error as e:
                 print(f"GrabCut Refine Error: {e}")
 
@@ -1250,14 +1258,12 @@ class MainWindow(QMainWindow):
                 # 6. Calculate Center
                 center = (int(tx + tw // 2), int(ty + th // 2))
 
-                # --- CORRECTED SECTION START ---
                 self.save_state() # Save Undo state right before modifying
                 
                 # Apply Clone (Only once)
                 self.bg_img_orig = cv2.seamlessClone(
                     src_patch, self.bg_img_orig, mask, center, cv2.NORMAL_CLONE
                 )
-                # --- CORRECTED SECTION END ---
 
                 print("Patch Applied Successfully.")
 
@@ -1316,7 +1322,7 @@ class MainWindow(QMainWindow):
                 # A. ERODE: Shave off 1 pixel to remove the white halo
                 # If the halo is thick, change iterations to 2
                 kernel = np.ones((3, 3), np.uint8)
-                mask = cv2.erode(mask, kernel, iterations=1) 
+                mask = cv2.erode(mask, kernel, iterations=2) 
 
                 # B. BLUR: Soften the new edge so it doesn't look like a sticker
                 mask = mask.astype(np.float32) # Convert to float for blending
