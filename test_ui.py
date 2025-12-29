@@ -1322,14 +1322,14 @@ class MainWindow(QMainWindow):
                 # A. ERODE: Shave off 1 pixel to remove the white halo
                 # If the halo is thick, change iterations to 2
                 kernel = np.ones((3, 3), np.uint8)
-                mask = cv2.erode(mask, kernel, iterations=2) 
+                mask = cv2.erode(mask, kernel, iterations=1) 
 
                 # B. BLUR: Soften the new edge so it doesn't look like a sticker
                 mask = mask.astype(np.float32) # Convert to float for blending
                 if mask.max() > 1.0: mask /= 255.0 
                 
                 # Gaussian Blur (Kernel size 3x3 or 5x5 is good)
-                mask = cv2.GaussianBlur(mask, (3, 3), 0)
+                #mask = cv2.GaussianBlur(mask, (3, 3), 0)
                 
                 # Clip to ensure valid alpha range
                 mask = np.clip(mask, 0, 1)
